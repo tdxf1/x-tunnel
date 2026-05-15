@@ -515,6 +515,14 @@ Verification:
 - `go test ./...`: pass.
 - `go test -cover ./...`: pass, `coverage: 30.4% of statements`.
 
+Post Phase 8 startup config validation extraction:
+
+- [ ] Extract startup listener/mode/forward validation from `main()` into error-returning helpers.
+- [ ] Preserve existing server/client behavior while returning parsed runtime config to `main()`.
+- [ ] Classify listener schemes from parsed lowercase URLs instead of string prefixes.
+- [ ] Add unit coverage for valid server/client configs and invalid mixed listeners, missing forward, bad metrics, bad `-ip`, bad forward scheme, and client cert on `ws://`.
+- [ ] Run focused startup validation tests, full tests, coverage, and commit.
+
 Post Phase 8 local proxy auth parsing:
 
 - [x] Require local SOCKS5/HTTP listener auth to use complete `user:pass@host:port` syntax.
@@ -529,3 +537,16 @@ Verification:
 - `go run . -l socks5://user@127.0.0.1:12347 -f ws://127.0.0.1:1/tunnel`: exits non-zero with `SOCKS5地址解析失败`.
 - `go test ./...`: pass.
 - `go test -cover ./...`: pass, `coverage: 30.5% of statements`.
+
+Post Phase 8 listener auth prevalidation:
+
+- [x] Validate SOCKS5/HTTP listener `user:pass@host:port` syntax during global listen-rule validation.
+- [x] Reject missing passwords or empty username/password before client pool startup.
+- [x] Add unit coverage, focused validation, full tests, coverage, and commit.
+
+Verification:
+
+- `go test -run 'Test(ValidateListenRule|ParseAuthAndAddr)' -count=1 ./...`: pass.
+- `go run . -l http://user@127.0.0.1:12346 -f ws://127.0.0.1:1/tunnel`: exits non-zero during listen-rule validation with `监听地址无效`.
+- `go test ./...`: pass.
+- `go test -cover ./...`: pass, `coverage: 30.7% of statements`.

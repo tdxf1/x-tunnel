@@ -644,6 +644,7 @@ func TestValidateListenRule(t *testing.T) {
 		"ws://127.0.0.1:18080/tunnel",
 		"wss://:18443/tunnel",
 		"socks5://user:pass@127.0.0.1:11080",
+		"http://user:pass@127.0.0.1:18080",
 		"http://127.0.0.1:18080",
 		"tcp://127.0.0.1:12000/127.0.0.1:19090",
 	}
@@ -658,6 +659,9 @@ func TestValidateListenRule(t *testing.T) {
 		"ftp://127.0.0.1:21",
 		"ws://127.0.0.1",
 		"socks5://127.0.0.1:70000",
+		"socks5://user@127.0.0.1:11080",
+		"http://user:@127.0.0.1:18080",
+		"http://:pass@127.0.0.1:18080",
 		"tcp://127.0.0.1:12000",
 		"tcp://127.0.0.1:12000/",
 	}

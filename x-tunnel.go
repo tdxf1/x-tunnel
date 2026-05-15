@@ -653,10 +653,18 @@ func validateListenRule(rule string) error {
 	if err != nil {
 		return err
 	}
-	switch strings.ToLower(u.Scheme) {
+	scheme := strings.ToLower(u.Scheme)
+	switch scheme {
 	case "ws", "wss", "socks5", "http":
 		if u.Host == "" {
 			return fmt.Errorf("必须包含 host:port")
+		}
+		if (scheme == "socks5" || scheme == "http") && u.User != nil {
+			username := u.User.Username()
+			password, ok := u.User.Password()
+			if username == "" || !ok || password == "" {
+				return fmt.Errorf("认证格式必须是 user:pass@host:port")
+			}
 		}
 		return validateListenHostPort(u.Host)
 	case "tcp":
