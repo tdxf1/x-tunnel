@@ -109,16 +109,16 @@ Verification:
 
 ### Phase 8: Final Verification and Review, 17:30-19:00
 
-- [ ] Run complete local test matrix:
-  - [ ] server `ws://127.0.0.1`
-  - [ ] client SOCKS5 listener
-  - [ ] client TCP forward listener
-  - [ ] HTTP proxy CONNECT if feasible in time
-  - [ ] token mismatch rejection
-- [ ] Record exact commands and results in this file.
-- [ ] Review diff for unnecessary churn.
-- [ ] Confirm docs match current behavior.
-- [ ] Prepare final summary with remaining risks and next development backlog.
+- [x] Run complete local test matrix:
+  - [x] server `ws://127.0.0.1`
+  - [x] client SOCKS5 listener
+  - [x] client TCP forward listener
+  - [x] HTTP proxy CONNECT if feasible in time
+  - [x] token mismatch rejection
+- [x] Record exact commands and results in this file.
+- [x] Review diff for unnecessary churn.
+- [x] Confirm docs match current behavior.
+- [x] Prepare final summary with remaining risks and next development backlog.
 
 ## Scope Control Rules
 
@@ -225,3 +225,20 @@ Phase 7:
 - Log evidence after refactor: server emitted `stream=4 client=bd1b5253 channel=1 kind=1 target=127.0.0.1:19097`.
 
 Pending for later phases: final integration smoke tests and final review.
+
+Phase 8:
+
+- Ran final local integration matrix with a temporary `go build` binary.
+- Covered WS server, SOCKS5 listener, TCP forward listener, HTTP proxy CONNECT through a local self-signed TLS service, and wrong-token rejection.
+- Matrix result: `phase8_matrix=pass hash=9fbf747126281a01d9be3b3712502fb005e4441a5832baf68eb10df609470bfb socks_size=73026 tcp_size=73026 connect_size=4919`.
+- CONNECT evidence: response contained `s_server -quiet -accept 19443`.
+- Token rejection evidence: client logged `认证失败：Token 不匹配或未提供`; server logged `Token 认证失败，来源 IP: 127.0.0.1`.
+- Diff review: protocol extraction is isolated to `protocol.go`; no wire-format changes were made in Phase 7/8.
+- Docs checked: `README.md`, `docs/protocol.md`, `docs/deployment.md`, and `docs/troubleshooting.md` match the current flags and observed behavior.
+
+Remaining risks/backlog:
+
+- Add CI so `go test ./...` runs automatically on push/PR.
+- Add automated integration tests instead of shell-only smoke scripts.
+- Add release build metadata defaults in a documented build script.
+- Consider mTLS or signed client auth beyond bearer-token subprotocol auth.
