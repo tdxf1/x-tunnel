@@ -1793,6 +1793,8 @@ func TestSOCKS5UDPPacketMalformed(t *testing.T) {
 		raw  []byte
 	}{
 		{name: "too short", raw: []byte{0, 0, 0}},
+		{name: "nonzero reserved high", raw: []byte{1, 0, 0, 1, 1, 2, 3, 4, 0, 53}},
+		{name: "nonzero reserved low", raw: []byte{0, 1, 0, 1, 1, 2, 3, 4, 0, 53}},
 		{name: "fragmented", raw: []byte{0, 0, 1, 1, 1, 2, 3, 4, 0, 53}},
 		{name: "unknown atyp", raw: []byte{0, 0, 0, 9, 0, 53}},
 		{name: "truncated domain", raw: []byte{0, 0, 0, 3, 5, 'a'}},
@@ -1803,6 +1805,29 @@ func TestSOCKS5UDPPacketMalformed(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if _, _, err := parseSOCKS5UDPPacket(tt.raw); err == nil {
 				t.Fatalf("parseSOCKS5UDPPacket accepted malformed packet %v", tt.raw)
+			}
+		})
+	}
+}
+
+func TestSOCKS5UDPRespMalformed(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  []byte
+	}{
+		{name: "too short", raw: []byte{0, 0, 0}},
+		{name: "nonzero reserved high", raw: []byte{1, 0, 0, 1, 1, 2, 3, 4, 0, 53}},
+		{name: "nonzero reserved low", raw: []byte{0, 1, 0, 1, 1, 2, 3, 4, 0, 53}},
+		{name: "fragmented", raw: []byte{0, 0, 1, 1, 1, 2, 3, 4, 0, 53}},
+		{name: "unknown atyp", raw: []byte{0, 0, 0, 9, 0, 53}},
+		{name: "truncated domain", raw: []byte{0, 0, 0, 3, 5, 'a'}},
+		{name: "truncated port", raw: []byte{0, 0, 0, 1, 1, 2, 3, 4, 0}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, _, err := parseSOCKS5UDPResp(tt.raw); err == nil {
+				t.Fatalf("parseSOCKS5UDPResp accepted malformed packet %v", tt.raw)
 			}
 		})
 	}

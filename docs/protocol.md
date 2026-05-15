@@ -232,6 +232,7 @@ RSV(2) | FRAG(1) | ATYP(1) | DST.ADDR | DST.PORT(2) | DATA
 
 Current behavior:
 
+- `RSV` must be `0x0000`.
 - `FRAG` must be `0`.
 - `ATYP` supports IPv4, domain, and IPv6.
 - IPv6 targets are formatted as `[host]:port` after parsing.

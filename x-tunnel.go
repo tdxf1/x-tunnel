@@ -1739,6 +1739,9 @@ func parseSOCKS5UDPResp(packet []byte) (*net.UDPAddr, []byte, error) {
 	if len(packet) < 10 {
 		return nil, nil, fmt.Errorf("数据包过短")
 	}
+	if packet[0] != 0 || packet[1] != 0 || packet[2] != 0 {
+		return nil, nil, fmt.Errorf("RSV/FRAG 字段必须为 0")
+	}
 	atyp := packet[3]
 	offset := 4
 	var host string
@@ -3668,7 +3671,7 @@ func (a *UDPAssociation) Close() {
 }
 
 func parseSOCKS5UDPPacket(b []byte) (string, []byte, error) {
-	if len(b) < 10 || b[2] != 0 {
+	if len(b) < 10 || b[0] != 0 || b[1] != 0 || b[2] != 0 {
 		return "", nil, errors.New("数据不合法")
 	}
 	off := 4

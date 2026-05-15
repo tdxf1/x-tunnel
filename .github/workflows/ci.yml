@@ -27,6 +27,9 @@ jobs:
       - name: Coverage
         run: go test -cover ./...
 
+      - name: Race
+        run: go test -race ./...
+
       - name: Build
         run: go build -o x-tunnel .
 

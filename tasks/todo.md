@@ -660,3 +660,30 @@ Verification:
 - `go test -run 'Test(ParseSOCKS5Addr|ValidateServerStartupConfig|ValidateStartupConfig|ExampleConfigFilesLoad)' -count=1 ./...`: pass.
 - `go test ./...`: pass.
 - `go test -cover ./...`: pass, `coverage: 38.5% of statements`.
+
+Post Phase 8 CI race testing:
+
+- [x] Add Go race detector test to GitHub Actions.
+- [x] Verify `go test -race ./...` locally.
+- [x] Run full tests and coverage after workflow change.
+- [x] Commit workflow and task log.
+
+Verification:
+
+- `go test -race ./...`: pass.
+- `go test ./...`: pass.
+- `go test -cover ./...`: pass, `coverage: 38.6% of statements`.
+
+Post Phase 8 SOCKS5 UDP header strict validation:
+
+- [x] Require SOCKS5 UDP request packets to have zero RSV and FRAG fields.
+- [x] Require upstream SOCKS5 UDP response packets to have zero RSV and FRAG fields.
+- [x] Add malformed packet coverage and protocol documentation.
+- [x] Run focused/full/coverage verification and commit.
+
+Verification:
+
+- `go test -run 'Test(SOCKS5UDPPacket|SOCKS5UDPResp|BuildSOCKS5UDPPacket|ParseSOCKS5Addr|ValidateServerStartupConfig)' -count=1 ./...`: pass.
+- `go test -race ./...`: pass.
+- `go test ./...`: pass.
+- `go test -cover ./...`: pass, `coverage: 38.6% of statements`.
