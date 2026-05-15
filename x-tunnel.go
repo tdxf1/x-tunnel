@@ -2575,8 +2575,10 @@ func resolveUDPWithStrategy(addr string, strategy byte) (*net.UDPAddr, error) {
 	if err != nil {
 		return net.ResolveUDPAddr("udp", addr)
 	}
-	port := 0
-	fmt.Sscanf(portStr, "%d", &port)
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		return nil, fmt.Errorf("port 必须在 1-65535 之间")
+	}
 
 	if ip := net.ParseIP(host); ip != nil {
 		return &net.UDPAddr{IP: ip, Port: port}, nil
@@ -3618,8 +3620,10 @@ func (a *UDPAssociation) loop() {
 					continue
 				}
 			}
-			var prt int
-			_, _ = fmt.Sscanf(ps, "%d", &prt)
+			prt, err := strconv.Atoi(ps)
+			if err != nil {
+				continue
+			}
 			if _, ok := udpBlockPorts[prt]; ok {
 				continue
 			}
@@ -3683,10 +3687,18 @@ func (a *UDPAssociation) send(target string, data []byte) {
 }
 
 func (a *UDPAssociation) handleUDPResponse(addrStr string, data []byte) {
-	host, portStr, _ := net.SplitHostPort(addrStr)
-	port := 0
-	fmt.Sscanf(portStr, "%d", &port)
-	pkt, _ := buildSOCKS5UDPPacket(host, port, data)
+	host, portStr, err := net.SplitHostPort(addrStr)
+	if err != nil {
+		return
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return
+	}
+	pkt, err := buildSOCKS5UDPPacket(host, port, data)
+	if err != nil {
+		return
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.clientUDPAddr != nil {

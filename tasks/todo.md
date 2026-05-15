@@ -829,3 +829,17 @@ Verification:
 - `go test -run TestIntegrationStartupValidationFailures -count=1 ./...`: pass.
 - `go test ./...`: pass.
 - `go test -cover ./...`: pass, `coverage: 41.7% of statements`.
+
+Post Phase 8 UDP strict port parsing:
+
+- [x] Reject UDP target addresses with non-numeric, zero, or out-of-range ports in IP strategy resolution.
+- [x] Avoid emitting SOCKS5 UDP response packets when the remote reply address has an invalid port.
+- [x] Replace remaining UDP `fmt.Sscanf` port parsing with checked parsing.
+- [x] Add focused unit coverage and run full verification before commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'Test(ResolveUDPWithStrategyRejectsInvalidPort|UDPAssociationHandleUDPResponseRejectsInvalidPort|SOCKS5UDPPacket|SOCKS5UDPResp)' -count=1 ./...`: pass.
+- `go test ./...`: pass.
+- `go test -cover ./...`: pass, `coverage: 42.1% of statements`.

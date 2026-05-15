@@ -2213,6 +2213,64 @@ func TestSOCKS5UDPRespMalformed(t *testing.T) {
 	}
 }
 
+func TestResolveUDPWithStrategyRejectsInvalidPort(t *testing.T) {
+	tests := []struct {
+		name     string
+		addr     string
+		strategy byte
+	}{
+		{name: "zero port", addr: "127.0.0.1:0", strategy: IPStrategyDefault},
+		{name: "overflow port", addr: "127.0.0.1:65536", strategy: IPStrategyPv4Pv6},
+		{name: "non numeric port", addr: "localhost:notaport", strategy: IPStrategyIPv4Only},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := resolveUDPWithStrategy(tt.addr, tt.strategy); err == nil {
+				t.Fatalf("resolveUDPWithStrategy(%q, %d) accepted invalid port", tt.addr, tt.strategy)
+			}
+		})
+	}
+}
+
+func TestUDPAssociationHandleUDPResponseRejectsInvalidPort(t *testing.T) {
+	relayConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatalf("listen relay udp: %v", err)
+	}
+	defer relayConn.Close()
+
+	clientConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatalf("listen client udp: %v", err)
+	}
+	defer clientConn.Close()
+
+	assoc := &UDPAssociation{
+		udpListener:   relayConn,
+		clientUDPAddr: clientConn.LocalAddr().(*net.UDPAddr),
+	}
+	for _, addr := range []string{
+		"127.0.0.1:0",
+		"127.0.0.1:65536",
+		"127.0.0.1:notaport",
+	} {
+		assoc.handleUDPResponse(addr, []byte("drop"))
+	}
+
+	if err := clientConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+		t.Fatalf("set client udp deadline: %v", err)
+	}
+	buf := make([]byte, 64)
+	n, _, err := clientConn.ReadFromUDP(buf)
+	if err == nil {
+		t.Fatalf("received UDP response for invalid port: %x", buf[:n])
+	}
+	if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+		t.Fatalf("read UDP response error = %v, want timeout", err)
+	}
+}
+
 func TestBuildSOCKS5UDPPacketRejectsOversizedDomain(t *testing.T) {
 	if _, err := buildSOCKS5UDPPacket(strings.Repeat("x", 256), 53, nil); err == nil {
 		t.Fatal("buildSOCKS5UDPPacket accepted oversized domain")
