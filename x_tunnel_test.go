@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -1503,6 +1504,40 @@ func TestHandleSOCKS5RejectsZeroConnectPort(t *testing.T) {
 	}
 	if resp[1] == 0x00 {
 		t.Fatalf("SOCKS5 zero-port connect succeeded: %v", resp)
+	}
+}
+
+func TestHandleSOCKS5RejectsUnsupportedCommand(t *testing.T) {
+	for _, cmd := range []byte{0x02, 0x09} {
+		t.Run(fmt.Sprintf("cmd_0x%02x", cmd), func(t *testing.T) {
+			server, client := net.Pipe()
+			defer server.Close()
+			defer client.Close()
+			_ = server.SetDeadline(time.Now().Add(time.Second))
+			_ = client.SetDeadline(time.Now().Add(time.Second))
+
+			go handleSOCKS5(server, &ProxyConfig{})
+			if _, err := client.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+				t.Fatalf("write SOCKS5 greeting: %v", err)
+			}
+			method := make([]byte, 2)
+			if _, err := io.ReadFull(client, method); err != nil {
+				t.Fatalf("read SOCKS5 method: %v", err)
+			}
+			if !bytes.Equal(method, []byte{0x05, 0x00}) {
+				t.Fatalf("SOCKS5 method = %v, want [5 0]", method)
+			}
+			if _, err := client.Write([]byte{0x05, cmd, 0x00, 0x01, 127, 0, 0, 1, 0, 80}); err != nil {
+				t.Fatalf("write SOCKS5 unsupported command request: %v", err)
+			}
+			resp := make([]byte, 10)
+			if _, err := io.ReadFull(client, resp); err != nil {
+				t.Fatalf("read SOCKS5 unsupported command response: %v", err)
+			}
+			if resp[1] != 0x07 {
+				t.Fatalf("SOCKS5 unsupported command status = 0x%02x, want 0x07", resp[1])
+			}
+		})
 	}
 }
 

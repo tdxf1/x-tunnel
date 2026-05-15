@@ -871,3 +871,17 @@ Verification:
 - `go test -run 'Test(HandleHTTPRejectsProxyAuth|ParseAuthAndAddr)' -count=1 ./...`: pass.
 - `go test ./...`: pass.
 - `go test -cover ./...`: pass, `coverage: 44.5% of statements`.
+
+Post Phase 8 SOCKS5 unsupported command response:
+
+- [x] Return SOCKS5 status `0x07` for unsupported local SOCKS5 commands.
+- [x] Preserve CONNECT and UDP ASSOCIATE behavior.
+- [x] Add focused unit coverage for BIND/unsupported command handling.
+- [x] Run focused/full/coverage verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'Test(HandleSOCKS5RejectsZeroConnectPort|HandleSOCKS5RejectsUnsupportedCommand|HandleSOCKS5RejectsMissing)' -count=1 ./...`: pass.
+- `go test ./...`: pass.
+- `go test -cover ./...`: pass, `coverage: 44.7% of statements`.

@@ -3504,6 +3504,8 @@ func handleSOCKS5(c net.Conn, cfgp *ProxyConfig) {
 		handleSOCKS5Connect(c, target)
 	case 0x03:
 		handleSOCKS5UDP(c, cfgp)
+	default:
+		_, _ = c.Write([]byte{0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 	}
 }
 
