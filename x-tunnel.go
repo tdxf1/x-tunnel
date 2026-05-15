@@ -1476,12 +1476,17 @@ func socks5UserPassAuthSrv(conn net.Conn, username, password string) error {
 }
 
 func socks5Connect(conn net.Conn, addr string) error {
+	if err := validateHostPort(addr); err != nil {
+		return err
+	}
 	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
 		return err
 	}
-	port := 0
-	fmt.Sscanf(portStr, "%d", &port)
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return err
+	}
 
 	var request []byte
 	ip := net.ParseIP(host)
@@ -1498,6 +1503,9 @@ func socks5Connect(conn net.Conn, addr string) error {
 			request[20], request[21] = byte(port>>8), byte(port)
 		}
 	} else {
+		if len(host) > 255 {
+			return fmt.Errorf("域名过长")
+		}
 		request = make([]byte, 7+len(host))
 		request[0], request[1], request[2], request[3] = 0x05, 0x01, 0x00, 0x03
 		request[4] = byte(len(host))
@@ -3431,6 +3439,10 @@ func handleSOCKS5(c net.Conn, cfgp *ProxyConfig) {
 		return
 	}
 	port := int(pb[0])<<8 | int(pb[1])
+	if head[1] == 0x01 && port == 0 {
+		_, _ = c.Write([]byte{0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		return
+	}
 	target = net.JoinHostPort(target, fmt.Sprintf("%d", port))
 
 	// 增强过滤逻辑：解析 host 判断是否为 IP，从而覆盖 ATYP=0x03 但内容为 IP 的情况

@@ -1200,6 +1200,26 @@ func TestSocks5ConnectRejectsTruncatedBoundAddress(t *testing.T) {
 	}
 }
 
+func TestSocks5ConnectRejectsInvalidTargetPort(t *testing.T) {
+	tests := []string{
+		"127.0.0.1:abc",
+		"127.0.0.1:0",
+		"127.0.0.1:65536",
+		net.JoinHostPort(strings.Repeat("a", 256), "80"),
+	}
+	for _, target := range tests {
+		t.Run(target, func(t *testing.T) {
+			server, client := net.Pipe()
+			defer server.Close()
+			defer client.Close()
+			_ = client.SetDeadline(time.Now().Add(100 * time.Millisecond))
+			if err := socks5Connect(client, target); err == nil {
+				t.Fatalf("socks5Connect(%q) accepted invalid target", target)
+			}
+		})
+	}
+}
+
 func TestHandleSOCKS5UserPassAuthRejectsShortRequest(t *testing.T) {
 	server, client := net.Pipe()
 	defer server.Close()
@@ -1216,6 +1236,36 @@ func TestHandleSOCKS5UserPassAuthRejectsShortRequest(t *testing.T) {
 	_ = client.Close()
 	if err := <-errCh; err == nil {
 		t.Fatal("handleSOCKS5UserPassAuth accepted short auth request")
+	}
+}
+
+func TestHandleSOCKS5RejectsZeroConnectPort(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+	_ = server.SetDeadline(time.Now().Add(time.Second))
+	_ = client.SetDeadline(time.Now().Add(time.Second))
+
+	go handleSOCKS5(server, &ProxyConfig{})
+	if _, err := client.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+		t.Fatalf("write SOCKS5 greeting: %v", err)
+	}
+	method := make([]byte, 2)
+	if _, err := io.ReadFull(client, method); err != nil {
+		t.Fatalf("read SOCKS5 method: %v", err)
+	}
+	if !bytes.Equal(method, []byte{0x05, 0x00}) {
+		t.Fatalf("SOCKS5 method = %v, want [5 0]", method)
+	}
+	if _, err := client.Write([]byte{0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1, 0, 0}); err != nil {
+		t.Fatalf("write SOCKS5 connect: %v", err)
+	}
+	resp := make([]byte, 10)
+	if _, err := io.ReadFull(client, resp); err != nil {
+		t.Fatalf("read SOCKS5 connect response: %v", err)
+	}
+	if resp[1] == 0x00 {
+		t.Fatalf("SOCKS5 zero-port connect succeeded: %v", resp)
 	}
 }
 

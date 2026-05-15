@@ -773,3 +773,17 @@ Verification:
 - `go test -run 'Test(HandleSOCKS5RejectsMissing|HandleSOCKS5UserPassAuthRejectsShortRequest|IntegrationLocalProxyAuth)' -count=1 ./...`: pass.
 - `go test ./...`: pass.
 - `go test -cover ./...`: pass, `coverage: 39.7% of statements`.
+
+Post Phase 8 SOCKS5 TCP port validation:
+
+- [x] Reject upstream SOCKS5 CONNECT targets with non-numeric, zero, or out-of-range ports before writing a request.
+- [x] Reject local SOCKS5 CONNECT requests with destination port 0 while preserving UDP ASSOCIATE behavior.
+- [x] Add focused unit coverage for both paths.
+- [x] Run focused/full/coverage verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'Test(Socks5ConnectRejects|HandleSOCKS5Rejects|HandleSOCKS5UserPassAuthRejectsShortRequest)' -count=1 ./...`: pass.
+- `go test ./...`: pass.
+- `go test -cover ./...`: pass, `coverage: 40.3% of statements`.
