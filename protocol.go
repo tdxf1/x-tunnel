@@ -13,6 +13,15 @@ const (
 	streamKindHello byte = 4
 )
 
+func isSupportedStreamKind(kind byte) bool {
+	switch kind {
+	case streamKindTCP, streamKindUDP, streamKindPing, streamKindHello:
+		return true
+	default:
+		return false
+	}
+}
+
 const (
 	protocolVersion byte = 1
 )
@@ -28,6 +37,12 @@ const (
 	protocolCapabilityUDP
 	protocolCapabilityPing
 	protocolCapabilityIPStrategy
+	protocolCapabilityTCPStatus
+)
+
+const (
+	tcpOpenStatusOK byte = iota
+	tcpOpenStatusError
 )
 
 const protocolHelloMagic = "XTUN"
@@ -43,7 +58,8 @@ func currentProtocolCapabilities() uint32 {
 	return protocolCapabilityTCP |
 		protocolCapabilityUDP |
 		protocolCapabilityPing |
-		protocolCapabilityIPStrategy
+		protocolCapabilityIPStrategy |
+		protocolCapabilityTCPStatus
 }
 
 func currentProtocolHello() ProtocolHello {
@@ -119,6 +135,38 @@ func negotiateProtocolHello(clientHello ProtocolHello) ProtocolHello {
 		Status:       protocolStatusOK,
 		Capabilities: caps,
 	}
+}
+
+func writeTCPOpenStatus(w io.Writer, status byte, message string) error {
+	if len(message) > 65535 {
+		return fmt.Errorf("TCP 打开状态消息过长")
+	}
+	head := make([]byte, 3)
+	head[0] = status
+	binary.BigEndian.PutUint16(head[1:3], uint16(len(message)))
+	if _, err := w.Write(head); err != nil {
+		return err
+	}
+	if message == "" {
+		return nil
+	}
+	_, err := w.Write([]byte(message))
+	return err
+}
+
+func readTCPOpenStatus(r io.Reader) (byte, string, error) {
+	head := make([]byte, 3)
+	if _, err := io.ReadFull(r, head); err != nil {
+		return 0, "", err
+	}
+	msgLen := int(binary.BigEndian.Uint16(head[1:3]))
+	message := make([]byte, msgLen)
+	if msgLen > 0 {
+		if _, err := io.ReadFull(r, message); err != nil {
+			return 0, "", err
+		}
+	}
+	return head[0], string(message), nil
 }
 
 func readSmuxOpenHeader(r io.Reader) (byte, byte, string, error) {

@@ -82,7 +82,20 @@ Checks:
 - Review server `-max-streams`; `0` means unlimited.
 - Raise the limit if expected concurrency is higher than the configured cap.
 - Check whether many clients, WebSocket channels, or long-lived TCP/UDP streams are stuck open.
-- If `-metrics` is enabled, check `x_tunnel_server_client_rejections_total` and `x_tunnel_server_stream_rejections_total`.
+- If `-metrics` is enabled, check `x_tunnel_server_client_session_rejections_total` and `x_tunnel_server_stream_rejections_total`.
+
+## Unsupported Stream Kind
+
+Symptoms:
+
+- Server logs `不支持的 stream kind`.
+- The affected smux stream closes without forwarding traffic.
+
+Checks:
+
+- Confirm both client and server are expected builds with `x-tunnel -version`.
+- Check for incompatible forks or experimental clients before raising protocol capabilities.
+- If `-metrics` is enabled, check `x_tunnel_server_unsupported_streams_total`.
 
 ## mTLS Failure
 

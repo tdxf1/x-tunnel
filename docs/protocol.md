@@ -102,7 +102,7 @@ Limits:
 
 - `target_len <= 65535`.
 - The current TCP/UDP/Ping stream open header remains unchanged for compatibility.
-- Unknown stream kinds should be treated as unsupported in future protocol versions.
+- Unknown stream kinds are treated as unsupported: the server logs the kind, increments `x_tunnel_server_unsupported_streams_total`, and closes the stream.
 
 ## 5. Protocol Hello Stream
 
@@ -146,6 +146,7 @@ Capability flags:
 | `1 << 1` | UDP | UDP streams are supported. |
 | `1 << 2` | Ping | Ping streams are supported. |
 | `1 << 3` | IPStrategy | IP strategy byte is understood. |
+| `1 << 4` | TCPStatus | TCP streams begin with an open-status frame before proxied bytes. |
 
 Current client behavior:
 
@@ -155,13 +156,24 @@ Current client behavior:
 
 ## 6. TCP Stream
 
-After a TCP stream open header, both sides proxy raw bytes until either direction exits. The implementation then closes both the target connection and the smux stream.
+After a TCP stream open header, legacy peers proxy raw bytes until either direction exits. The implementation then closes both the target connection and the smux stream.
 
-Current behavior:
+When both peers negotiate `TCPStatus`, the server first writes a TCP open-status frame:
 
-- No structured remote dial error is returned to the local client.
-- The local SOCKS5 CONNECT response is sent before the remote TCP stream is opened.
-- The HTTP CONNECT response is sent before the remote TCP stream is opened.
+```text
+----------------+------------------+----------------------+
+| status (u8)   | msg_len (BE16)   | message bytes ...    |
++----------------+------------------+----------------------+
+```
+
+Status values:
+
+| Value | Name | Meaning |
+| --- | --- | --- |
+| `0` | OK | Target policy and remote TCP dial succeeded. Proxied bytes follow. |
+| `1` | Error | Target policy or remote TCP dial failed. The message is diagnostic text and the stream closes. |
+
+New clients wait for this status before returning local SOCKS5 or HTTP CONNECT success. Legacy channels do not wait for a status frame and keep the older best-effort behavior.
 
 ## 7. Ping Stream
 
@@ -231,11 +243,11 @@ Current behavior:
 
 - Protocol version/capability negotiation now exists on a hello control stream, but TCP/UDP/Ping stream headers are still unversioned for compatibility.
 - Optional future features such as compression, metrics, stronger auth, or status replies must be gated behind capability flags.
-- Unknown stream kinds still need stronger explicit rejection behavior in a future revision.
+- Unknown stream kinds are explicitly rejected and counted, but future structured status replies still require negotiated framing.
 
 ### Reliability Risks
 
-- Remote TCP dial failures are not propagated as structured local SOCKS5/HTTP errors.
+- TCP open status is negotiated, but UDP errors and mid-stream TCP failures are still not structured.
 - Reconnect timing and major network timeouts are configurable, but future paths should keep using `GlobalConfig` rather than reintroducing literals.
 - Graceful shutdown and listener lifecycle are not centralized.
 

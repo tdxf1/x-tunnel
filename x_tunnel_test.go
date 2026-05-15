@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/xtaci/smux"
 )
 
 func TestParseIPStrategy(t *testing.T) {
@@ -119,6 +121,7 @@ func TestWriteMetrics(t *testing.T) {
 	oldClientRejects := atomic.LoadUint64(&serverClientRejectSeq)
 	oldStreamRejects := atomic.LoadUint64(&serverStreamRejectSeq)
 	oldTargetRejects := atomic.LoadUint64(&serverTargetRejectSeq)
+	oldUnsupportedStreams := atomic.LoadUint64(&serverUnsupportedStreamSeq)
 	defer func() {
 		atomic.StoreUint64(&serverStreamSeq, oldStreams)
 		atomic.StoreUint64(&udpAssociationSeq, oldUDP)
@@ -128,6 +131,7 @@ func TestWriteMetrics(t *testing.T) {
 		atomic.StoreUint64(&serverClientRejectSeq, oldClientRejects)
 		atomic.StoreUint64(&serverStreamRejectSeq, oldStreamRejects)
 		atomic.StoreUint64(&serverTargetRejectSeq, oldTargetRejects)
+		atomic.StoreUint64(&serverUnsupportedStreamSeq, oldUnsupportedStreams)
 		serverSessions.Delete("metrics-test")
 	}()
 	atomic.StoreUint64(&serverStreamSeq, 7)
@@ -138,6 +142,7 @@ func TestWriteMetrics(t *testing.T) {
 	atomic.StoreUint64(&serverClientRejectSeq, 17)
 	atomic.StoreUint64(&serverStreamRejectSeq, 19)
 	atomic.StoreUint64(&serverTargetRejectSeq, 23)
+	atomic.StoreUint64(&serverUnsupportedStreamSeq, 29)
 	serverSessions.Store("metrics-test", &ClientSession{clientID: "metrics-test"})
 
 	var buf bytes.Buffer
@@ -152,6 +157,7 @@ func TestWriteMetrics(t *testing.T) {
 		"x_tunnel_server_client_session_rejections_total 17",
 		"x_tunnel_server_stream_rejections_total 19",
 		"x_tunnel_server_target_rejections_total 23",
+		"x_tunnel_server_unsupported_streams_total 29",
 		"x_tunnel_server_sessions",
 	} {
 		if !strings.Contains(got, want) {
@@ -898,6 +904,85 @@ func TestProtocolConstants(t *testing.T) {
 	}
 }
 
+func TestIsSupportedStreamKind(t *testing.T) {
+	for _, kind := range []byte{streamKindTCP, streamKindUDP, streamKindPing, streamKindHello} {
+		if !isSupportedStreamKind(kind) {
+			t.Fatalf("isSupportedStreamKind(%d) = false, want true", kind)
+		}
+	}
+	for _, kind := range []byte{0, 5, 255} {
+		if isSupportedStreamKind(kind) {
+			t.Fatalf("isSupportedStreamKind(%d) = true, want false", kind)
+		}
+	}
+}
+
+func TestHandleSmuxStreamRejectsUnsupportedKind(t *testing.T) {
+	oldUnsupportedStreams := atomic.LoadUint64(&serverUnsupportedStreamSeq)
+	defer atomic.StoreUint64(&serverUnsupportedStreamSeq, oldUnsupportedStreams)
+	atomic.StoreUint64(&serverUnsupportedStreamSeq, 0)
+
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	serverSession, err := smux.Server(serverConn, nil)
+	if err != nil {
+		t.Fatalf("smux server: %v", err)
+	}
+	defer serverSession.Close()
+	clientSession, err := smux.Client(clientConn, nil)
+	if err != nil {
+		t.Fatalf("smux client: %v", err)
+	}
+	defer clientSession.Close()
+
+	accepted := make(chan *smux.Stream, 1)
+	acceptErr := make(chan error, 1)
+	go func() {
+		stream, err := serverSession.AcceptStream()
+		if err != nil {
+			acceptErr <- err
+			return
+		}
+		accepted <- stream
+	}()
+
+	clientStream, err := clientSession.OpenStream()
+	if err != nil {
+		t.Fatalf("open smux stream: %v", err)
+	}
+	defer clientStream.Close()
+	if err := writeSmuxOpenHeader(clientStream, 99, IPStrategyDefault, "unsupported.example:443"); err != nil {
+		t.Fatalf("write unsupported stream header: %v", err)
+	}
+
+	var serverStream *smux.Stream
+	select {
+	case serverStream = <-accepted:
+	case err := <-acceptErr:
+		t.Fatalf("accept smux stream: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for accepted smux stream")
+	}
+
+	done := make(chan struct{})
+	session := &ClientSession{clientID: "unsupported-kind-test", channels: make(map[uint64]*WSChannel)}
+	go func() {
+		defer close(done)
+		handleSmuxStream(session, &WSChannel{id: 1, session: session}, serverStream)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for unsupported stream handler")
+	}
+	if got := atomic.LoadUint64(&serverUnsupportedStreamSeq); got != 1 {
+		t.Fatalf("serverUnsupportedStreamSeq = %d, want 1", got)
+	}
+}
+
 func TestProtocolHelloRoundTrip(t *testing.T) {
 	if protocolStatusOK != 0 {
 		t.Fatalf("protocolStatusOK = %d, want 0", protocolStatusOK)
@@ -927,6 +1012,36 @@ func TestProtocolHelloRejectsOversizedMessage(t *testing.T) {
 	err := writeProtocolHello(io.Discard, ProtocolHello{Message: strings.Repeat("x", 65536)})
 	if err == nil {
 		t.Fatal("writeProtocolHello accepted oversized message")
+	}
+}
+
+func TestTCPOpenStatusRoundTrip(t *testing.T) {
+	var buf bytes.Buffer
+	if err := writeTCPOpenStatus(&buf, tcpOpenStatusError, "dial failed"); err != nil {
+		t.Fatalf("writeTCPOpenStatus returned error: %v", err)
+	}
+	status, message, err := readTCPOpenStatus(&buf)
+	if err != nil {
+		t.Fatalf("readTCPOpenStatus returned error: %v", err)
+	}
+	if status != tcpOpenStatusError || message != "dial failed" {
+		t.Fatalf("readTCPOpenStatus = status %d message %q", status, message)
+	}
+}
+
+func TestTCPOpenStatusRejectsOversizedMessage(t *testing.T) {
+	if err := writeTCPOpenStatus(io.Discard, tcpOpenStatusError, strings.Repeat("x", 65536)); err == nil {
+		t.Fatal("writeTCPOpenStatus accepted oversized message")
+	}
+}
+
+func TestReadTCPOpenStatusMalformed(t *testing.T) {
+	if _, _, err := readTCPOpenStatus(bytes.NewReader([]byte{tcpOpenStatusOK})); err == nil {
+		t.Fatal("readTCPOpenStatus accepted short frame")
+	}
+	raw := []byte{tcpOpenStatusError, 0, 5, 'x'}
+	if _, _, err := readTCPOpenStatus(bytes.NewReader(raw)); err == nil {
+		t.Fatal("readTCPOpenStatus accepted truncated message")
 	}
 }
 

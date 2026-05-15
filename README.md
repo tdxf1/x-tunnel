@@ -111,7 +111,7 @@ Expose lightweight Prometheus-style counters with `-metrics`:
 curl http://127.0.0.1:9090/metrics
 ```
 
-Metrics include session/stream counters plus rejection counters for source CIDR, token auth, client limits, stream limits, and target policy.
+Metrics include session/stream counters plus rejection counters for source CIDR, token auth, client limits, stream limits, target policy, and unsupported stream kinds.
 
 ## Config File
 

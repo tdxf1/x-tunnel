@@ -282,6 +282,54 @@ func TestIntegrationMaxClientsRejectsNewClient(t *testing.T) {
 	assertMetricsContains(t, fetchHTTP(t, "http://"+metricsAddr+"/metrics"), "x_tunnel_server_client_session_rejections_total 1")
 }
 
+func TestIntegrationTCPStatusRejectsBlockedTarget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	binPath := filepath.Join(t.TempDir(), "x-tunnel")
+	build := exec.CommandContext(ctx, "go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("go build failed: %v\n%s", err, out)
+	}
+
+	wsAddr := freeTCPAddr(t)
+	socksAddr := freeTCPAddr(t)
+	metricsAddr := freeTCPAddr(t)
+	serverLog := filepath.Join(t.TempDir(), "tcp-status-server.log")
+	clientLog := filepath.Join(t.TempDir(), "tcp-status-client.log")
+
+	server := startXTunnel(t, ctx, binPath, serverLog,
+		"-l", "ws://"+wsAddr+"/tunnel",
+		"-token", "tcp-status-token",
+		"-cidr", "127.0.0.1/32",
+		"-allow-target", "10.0.0.0/8",
+		"-metrics", metricsAddr,
+	)
+	defer stopProcess(server)
+	waitTCP(t, ctx, wsAddr)
+	waitTCP(t, ctx, metricsAddr)
+
+	client := startXTunnel(t, ctx, binPath, clientLog,
+		"-l", "socks5://"+socksAddr,
+		"-f", "ws://"+wsAddr+"/tunnel",
+		"-token", "tcp-status-token",
+		"-n", "1",
+	)
+	defer stopProcess(client)
+	waitTCP(t, ctx, socksAddr)
+	waitLogContains(t, ctx, clientLog, "协议协商成功")
+
+	if got := socks5ConnectReplyCode(t, socksAddr, "127.0.0.1:1"); got == 0x00 {
+		t.Fatal("SOCKS5 connect unexpectedly succeeded for blocked target")
+	}
+	waitLogContains(t, ctx, serverLog, "TCP 拒绝")
+	assertMetricsContains(t, fetchHTTP(t, "http://"+metricsAddr+"/metrics"), "x_tunnel_server_target_rejections_total 1")
+}
+
 func startXTunnel(t *testing.T, ctx context.Context, binPath, logPath string, args ...string) *exec.Cmd {
 	t.Helper()
 	logFile, err := os.Create(logPath)
@@ -483,6 +531,60 @@ func fetchViaSOCKS5(t *testing.T, proxyAddr, targetAddr, path string) string {
 	return readHTTPResponseBody(t, bufio.NewReader(conn))
 }
 
+func socks5ConnectReplyCode(t *testing.T, proxyAddr, targetAddr string) byte {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", proxyAddr, 3*time.Second)
+	if err != nil {
+		t.Fatalf("dial SOCKS5 proxy: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(integrationIOTimeout)); err != nil {
+		t.Fatalf("set SOCKS5 deadline: %v", err)
+	}
+
+	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+		t.Fatalf("write SOCKS5 greeting: %v", err)
+	}
+	greeting := make([]byte, 2)
+	if _, err := io.ReadFull(conn, greeting); err != nil {
+		t.Fatalf("read SOCKS5 greeting: %v", err)
+	}
+	if !bytes.Equal(greeting, []byte{0x05, 0x00}) {
+		t.Fatalf("SOCKS5 greeting = %v", greeting)
+	}
+
+	host, portStr, err := net.SplitHostPort(targetAddr)
+	if err != nil {
+		t.Fatalf("split target addr: %v", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("parse target port: %v", err)
+	}
+	req := []byte{0x05, 0x01, 0x00}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip4 := ip.To4(); ip4 != nil {
+			req = append(req, 0x01)
+			req = append(req, ip4...)
+		} else {
+			req = append(req, 0x04)
+			req = append(req, ip.To16()...)
+		}
+	} else {
+		req = append(req, 0x03, byte(len(host)))
+		req = append(req, []byte(host)...)
+	}
+	req = append(req, byte(port>>8), byte(port))
+	if _, err := conn.Write(req); err != nil {
+		t.Fatalf("write SOCKS5 connect: %v", err)
+	}
+	resp := make([]byte, 10)
+	if _, err := io.ReadFull(conn, resp); err != nil {
+		t.Fatalf("read SOCKS5 connect response: %v", err)
+	}
+	return resp[1]
+}
+
 func startUDPEcho(t *testing.T) string {
 	t.Helper()
 	addr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
@@ -666,6 +768,7 @@ func assertMetrics(t *testing.T, got string) {
 		"x_tunnel_server_client_session_rejections_total",
 		"x_tunnel_server_stream_rejections_total",
 		"x_tunnel_server_target_rejections_total",
+		"x_tunnel_server_unsupported_streams_total",
 		"x_tunnel_server_sessions",
 	} {
 		if !strings.Contains(got, want) {

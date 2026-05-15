@@ -170,14 +170,15 @@ var (
 	targetPolicy *TargetPolicy
 	ipStrategy   byte
 
-	serverStreamSeq       uint64
-	udpAssociationSeq     uint64
-	clientReconnectSeq    uint64
-	serverSourceRejectSeq uint64
-	serverAuthRejectSeq   uint64
-	serverClientRejectSeq uint64
-	serverStreamRejectSeq uint64
-	serverTargetRejectSeq uint64
+	serverStreamSeq            uint64
+	udpAssociationSeq          uint64
+	clientReconnectSeq         uint64
+	serverSourceRejectSeq      uint64
+	serverAuthRejectSeq        uint64
+	serverClientRejectSeq      uint64
+	serverStreamRejectSeq      uint64
+	serverTargetRejectSeq      uint64
+	serverUnsupportedStreamSeq uint64
 )
 
 var (
@@ -1937,9 +1938,10 @@ var (
 )
 
 type WSChannel struct {
-	id      uint64
-	conn    *websocket.Conn
-	session *ClientSession
+	id           uint64
+	conn         *websocket.Conn
+	session      *ClientSession
+	capabilities uint32
 }
 
 type ClientSession struct {
@@ -2241,6 +2243,8 @@ func writeMetrics(w io.Writer) {
 	fmt.Fprintf(w, "x_tunnel_server_stream_rejections_total %d\n", atomic.LoadUint64(&serverStreamRejectSeq))
 	fmt.Fprintf(w, "# TYPE x_tunnel_server_target_rejections_total counter\n")
 	fmt.Fprintf(w, "x_tunnel_server_target_rejections_total %d\n", atomic.LoadUint64(&serverTargetRejectSeq))
+	fmt.Fprintf(w, "# TYPE x_tunnel_server_unsupported_streams_total counter\n")
+	fmt.Fprintf(w, "x_tunnel_server_unsupported_streams_total %d\n", atomic.LoadUint64(&serverUnsupportedStreamSeq))
 	fmt.Fprintf(w, "# TYPE x_tunnel_server_sessions gauge\n")
 	fmt.Fprintf(w, "x_tunnel_server_sessions %d\n", countServerSessions())
 }
@@ -2435,6 +2439,11 @@ func handleSmuxStream(session *ClientSession, ch *WSChannel, stream *smux.Stream
 		return
 	}
 	log.Printf("[服务端] stream=%d client=%s channel=%d kind=%d target=%s", streamID, shortID(session.clientID), ch.id, kind, target)
+	if !isSupportedStreamKind(kind) {
+		atomic.AddUint64(&serverUnsupportedStreamSeq, 1)
+		log.Printf("[服务端] 客户ID:%s 不支持的 stream kind: %d, target=%s, 通道:%d", shortID(session.clientID), kind, target, ch.id)
+		return
+	}
 	switch kind {
 	case streamKindHello:
 		clientHello, err := readProtocolHello(stream)
@@ -2451,6 +2460,7 @@ func handleSmuxStream(session *ClientSession, ch *WSChannel, stream *smux.Stream
 			log.Printf("[服务端] 客户ID:%s 协议协商拒绝: %s, 通道:%d", shortID(session.clientID), response.Message, ch.id)
 			return
 		}
+		atomic.StoreUint32(&ch.capabilities, response.Capabilities)
 		log.Printf("[服务端] 客户ID:%s 协议协商成功: version=%d caps=0x%x, 通道:%d", shortID(session.clientID), response.Version, response.Capabilities, ch.id)
 	case streamKindPing:
 		payload := make([]byte, 8)
@@ -2460,9 +2470,13 @@ func handleSmuxStream(session *ClientSession, ch *WSChannel, stream *smux.Stream
 		_, _ = stream.Write(payload)
 	case streamKindTCP:
 		log.Printf("[服务端] 客户ID:%s TCP 打开: %s, 通道:%d", shortID(session.clientID), target, ch.id)
+		sendOpenStatus := atomic.LoadUint32(&ch.capabilities)&protocolCapabilityTCPStatus != 0
 		if err := ensureTargetAllowed(target); err != nil {
 			atomic.AddUint64(&serverTargetRejectSeq, 1)
 			log.Printf("[服务端] 客户ID:%s TCP 拒绝: %s, reason=%v, 通道:%d", shortID(session.clientID), target, err, ch.id)
+			if sendOpenStatus {
+				_ = writeTCPOpenStatus(stream, tcpOpenStatusError, err.Error())
+			}
 			return
 		}
 		var tcpConn net.Conn
@@ -2473,7 +2487,16 @@ func handleSmuxStream(session *ClientSession, ch *WSChannel, stream *smux.Stream
 		}
 		if err != nil {
 			log.Printf("[服务端] 客户ID:%s TCP 连接失败: %s, err=%v, 通道:%d", shortID(session.clientID), target, err, ch.id)
+			if sendOpenStatus {
+				_ = writeTCPOpenStatus(stream, tcpOpenStatusError, err.Error())
+			}
 			return
+		}
+		if sendOpenStatus {
+			if err := writeTCPOpenStatus(stream, tcpOpenStatusOK, ""); err != nil {
+				_ = tcpConn.Close()
+				return
+			}
 		}
 		proxyConnStream(tcpConn, stream)
 		log.Printf("[服务端] 客户ID:%s TCP 关闭: %s, 通道:%d", shortID(session.clientID), target, ch.id)
@@ -2570,6 +2593,7 @@ type ECHPool struct {
 	wsConnsMu     sync.RWMutex
 	smuxConns     []*smux.Session
 	channelRTT    []int64
+	channelCaps   []uint32
 	selectCounter uint64
 }
 
@@ -2585,6 +2609,7 @@ func NewECHPool(addr string, n int, ips []string, clientID string) *ECHPool {
 		clientID:      clientID,
 		smuxConns:     make([]*smux.Session, total),
 		channelRTT:    make([]int64, total),
+		channelCaps:   make([]uint32, total),
 	}
 	return p
 }
@@ -2635,7 +2660,7 @@ func (p *ECHPool) dialAndServe(ctx context.Context, idx int, ip string) {
 			}
 			continue
 		}
-		legacyProtocol, err := negotiateClientProtocol(sess, cfg.RTTProbeTimeout)
+		caps, legacyProtocol, err := negotiateClientProtocol(sess, cfg.RTTProbeTimeout)
 		if err != nil {
 			_ = sess.Close()
 			_ = wsConn.Close()
@@ -2647,11 +2672,12 @@ func (p *ECHPool) dialAndServe(ctx context.Context, idx int, ip string) {
 		if legacyProtocol {
 			log.Printf("[客户端] 通道 %d (IP:%s) 使用旧协议模式（服务端未响应 hello）", chID, ipLabel)
 		} else {
-			log.Printf("[客户端] 通道 %d (IP:%s) 协议协商成功: version=%d caps=0x%x", chID, ipLabel, protocolVersion, currentProtocolCapabilities())
+			log.Printf("[客户端] 通道 %d (IP:%s) 协议协商成功: version=%d caps=0x%x", chID, ipLabel, protocolVersion, caps)
 		}
 		p.wsConnsMu.Lock()
 		p.smuxConns[idx] = sess
 		p.channelRTT[idx] = 0
+		p.channelCaps[idx] = caps
 		p.wsConnsMu.Unlock()
 		log.Printf("[客户端] 通道 %d (IP:%s) 就绪 (smux)", chID, ipLabel)
 		reconnectAttempt = 0
@@ -2683,6 +2709,7 @@ func (p *ECHPool) dialAndServe(ctx context.Context, idx int, ip string) {
 		p.wsConnsMu.Lock()
 		p.smuxConns[idx] = nil
 		p.channelRTT[idx] = 0
+		p.channelCaps[idx] = 0
 		p.wsConnsMu.Unlock()
 		if probeErr != nil {
 			log.Printf("[客户端] 通道 %d 断开原因: %v", chID, probeErr)
@@ -2746,40 +2773,40 @@ func (p *ECHPool) probeChannelRTTOnce(sess *smux.Session, timeout time.Duration)
 	return time.Since(start).Nanoseconds(), nil
 }
 
-func negotiateClientProtocol(sess *smux.Session, timeout time.Duration) (bool, error) {
+func negotiateClientProtocol(sess *smux.Session, timeout time.Duration) (uint32, bool, error) {
 	s, err := sess.OpenStream()
 	if err != nil {
-		return false, err
+		return 0, false, err
 	}
 	defer s.Close()
 	_ = s.SetDeadline(time.Now().Add(timeout))
 	if err := writeSmuxOpenHeader(s, streamKindHello, IPStrategyDefault, ""); err != nil {
-		return false, err
+		return 0, false, err
 	}
 	if err := writeProtocolHello(s, currentProtocolHello()); err != nil {
-		return false, err
+		return 0, false, err
 	}
 	response, err := readProtocolHello(s)
 	if err != nil {
 		if isLegacyProtocolHelloError(err) {
-			return true, nil
+			return 0, true, nil
 		}
-		return false, err
+		return 0, false, err
 	}
 	if response.Status != protocolStatusOK {
 		if response.Message != "" {
-			return false, fmt.Errorf("协议协商失败: %s", response.Message)
+			return 0, false, fmt.Errorf("协议协商失败: %s", response.Message)
 		}
-		return false, fmt.Errorf("协议协商失败: status=%d", response.Status)
+		return 0, false, fmt.Errorf("协议协商失败: status=%d", response.Status)
 	}
 	if response.Version != protocolVersion {
-		return false, fmt.Errorf("协议版本不匹配: %d", response.Version)
+		return 0, false, fmt.Errorf("协议版本不匹配: %d", response.Version)
 	}
 	required := protocolCapabilityTCP | protocolCapabilityPing
 	if response.Capabilities&required != required {
-		return false, fmt.Errorf("协议能力不足: caps=0x%x", response.Capabilities)
+		return 0, false, fmt.Errorf("协议能力不足: caps=0x%x", response.Capabilities)
 	}
-	return false, nil
+	return response.Capabilities, false, nil
 }
 
 func isLegacyProtocolHelloError(err error) bool {
@@ -2833,7 +2860,7 @@ func logClientConnEvent(c net.Conn, reqType, target string, chID int, opened boo
 	log.Printf("[客户端] %s %s %s %s 通道 %d", clientSourceAddr(c), reqType, arrow, target, chID)
 }
 
-func (p *ECHPool) openBestStream() (*smux.Stream, int, int, error) {
+func (p *ECHPool) openBestStream() (*smux.Stream, int, int, uint32, error) {
 	p.wsConnsMu.RLock()
 	type candidate struct {
 		idx int
@@ -2852,7 +2879,7 @@ func (p *ECHPool) openBestStream() (*smux.Stream, int, int, error) {
 	}
 	p.wsConnsMu.RUnlock()
 	if len(cands) == 0 {
-		return nil, 0, 0, fmt.Errorf("无可用 smux 通道")
+		return nil, 0, 0, 0, fmt.Errorf("无可用 smux 通道")
 	}
 	minRTT := cands[0].rtt
 	for _, c := range cands[1:] {
@@ -2871,20 +2898,21 @@ func (p *ECHPool) openBestStream() (*smux.Stream, int, int, error) {
 	best := near[pick]
 	p.wsConnsMu.RLock()
 	sess := p.smuxConns[best.idx]
+	caps := p.channelCaps[best.idx]
 	p.wsConnsMu.RUnlock()
 	if sess == nil || sess.IsClosed() {
-		return nil, 0, 0, fmt.Errorf("通道不可用")
+		return nil, 0, 0, 0, fmt.Errorf("通道不可用")
 	}
 	decision := best.idx + 1
 	s, err := sess.OpenStream()
 	if err != nil {
-		return nil, 0, 0, err
+		return nil, 0, 0, 0, err
 	}
-	return s, best.idx + 1, decision, nil
+	return s, best.idx + 1, decision, caps, nil
 }
 
 func (p *ECHPool) openTCPStream(target string) (*smux.Stream, int, int, error) {
-	s, chID, decision, err := p.openBestStream()
+	s, chID, decision, caps, err := p.openBestStream()
 	if err != nil {
 		return nil, 0, 0, err
 	}
@@ -2892,11 +2920,27 @@ func (p *ECHPool) openTCPStream(target string) (*smux.Stream, int, int, error) {
 		_ = s.Close()
 		return nil, 0, 0, err
 	}
+	if caps&protocolCapabilityTCPStatus != 0 {
+		_ = s.SetDeadline(time.Now().Add(cfg.DialTimeout))
+		status, message, err := readTCPOpenStatus(s)
+		_ = s.SetDeadline(time.Time{})
+		if err != nil {
+			_ = s.Close()
+			return nil, 0, 0, err
+		}
+		if status != tcpOpenStatusOK {
+			_ = s.Close()
+			if message == "" {
+				message = fmt.Sprintf("status=%d", status)
+			}
+			return nil, 0, 0, fmt.Errorf("远端 TCP 打开失败: %s", message)
+		}
+	}
 	return s, chID, decision, nil
 }
 
 func (p *ECHPool) openUDPStream(target string) (*smux.Stream, int, int, error) {
-	s, chID, decision, err := p.openBestStream()
+	s, chID, decision, _, err := p.openBestStream()
 	if err != nil {
 		return nil, 0, 0, err
 	}
@@ -3213,14 +3257,15 @@ func handleSOCKS5UserPassAuth(c net.Conn, cfgp *ProxyConfig) error {
 }
 
 func handleSOCKS5Connect(c net.Conn, target string) {
-	_, err := c.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
-	if err != nil {
-		_ = c.Close()
-		return
-	}
 	stream, _, decision, err := echPool.openTCPStream(target)
 	if err != nil {
 		log.Printf("[客户端] %s SOCKS5 打开失败 %s: %v", clientSourceAddr(c), target, err)
+		_, _ = c.Write([]byte{0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		_ = c.Close()
+		return
+	}
+	if _, err := c.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0}); err != nil {
+		_ = stream.Close()
 		_ = c.Close()
 		return
 	}
@@ -3534,9 +3579,7 @@ func handleHTTP(c net.Conn, cfgp *ProxyConfig) {
 
 	var first []byte
 
-	if req.Method == "CONNECT" {
-		_, _ = c.Write([]byte("HTTP/1.1 200 连接已建立\r\n\r\n"))
-	} else {
+	if req.Method != "CONNECT" {
 		req.RequestURI = ""
 		req.URL.Scheme = ""
 		req.URL.Host = ""
@@ -3548,7 +3591,16 @@ func handleHTTP(c net.Conn, cfgp *ProxyConfig) {
 	stream, _, decision, err := echPool.openTCPStream(target)
 	if err != nil {
 		log.Printf("[客户端] %s HTTP 打开失败 %s: %v", clientSourceAddr(c), target, err)
+		if req.Method == "CONNECT" {
+			_, _ = c.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
+		}
 		return
+	}
+	if req.Method == "CONNECT" {
+		if _, err := c.Write([]byte("HTTP/1.1 200 连接已建立\r\n\r\n")); err != nil {
+			_ = stream.Close()
+			return
+		}
 	}
 	if len(first) > 0 {
 		if _, err := stream.Write(first); err != nil {

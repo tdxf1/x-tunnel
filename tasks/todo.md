@@ -415,3 +415,32 @@ Verification:
 - `go test -run 'Test(LocalTunnelIntegration|IntegrationMaxClientsRejectsNewClient|WriteMetrics)' -count=1 ./...`: pass; integration assertions verify token and client-session rejection counters through `/metrics`.
 - `go test ./...`: pass.
 - `go test -cover ./...`: pass, `coverage: 28.4% of statements`.
+
+Post Phase 8 TCP open status:
+
+- [x] Add a negotiated `TCPStatus` capability without changing legacy TCP stream behavior.
+- [x] Have new servers send TCP open success/failure status before proxy bytes.
+- [x] Have new clients wait for TCP status before returning local SOCKS5/HTTP CONNECT success.
+- [x] Add protocol/unit/integration coverage for blocked or failed remote TCP opens.
+- [x] Update `docs/protocol.md`, run verification, and commit.
+
+Verification:
+
+- `go test -run 'Test(TCPOpenStatus|ProtocolHello|NegotiateProtocolHello|IntegrationTCPStatusRejectsBlockedTarget)' -count=1 ./...`: pass.
+- `go test -run 'Test(TCPOpenStatus|IntegrationTCPStatusRejectsBlockedTarget|HandleSmuxStreamRejectsUnsupportedKind|WriteMetrics|IsSupportedStreamKind)' -count=1 ./...`: pass.
+- `go test ./...`: pass.
+- `go test -cover ./...`: pass, `coverage: 29.3% of statements`.
+
+Post Phase 8 unknown stream kinds:
+
+- [x] Add explicit server handling for unsupported smux stream kinds.
+- [x] Close unsupported streams without changing existing wire framing.
+- [x] Expose an unsupported-stream counter in metrics.
+- [x] Update protocol docs and tests, then run focused/full/coverage verification before commit.
+
+Verification:
+
+- `go test -run 'Test(WriteMetrics|IsSupportedStreamKind|HandleSmuxStreamRejectsUnsupportedKind|LocalTunnelIntegration)' -count=1 ./...`: pass.
+- `go test -run TestProtocolConstants -count=1 ./...`: pass.
+- `go test ./...`: pass.
+- `go test -cover ./...`: pass, `coverage: 29.3% of statements`.
