@@ -145,6 +145,8 @@ var (
 	cidrs            string
 	targetAllowCIDRs string
 	targetDenyCIDRs  string
+	targetAllowHosts string
+	targetDenyHosts  string
 	connectionNum    int
 	insecure         bool
 	ips              string
@@ -192,8 +194,10 @@ type SOCKS5Config struct {
 }
 
 type TargetPolicy struct {
-	Allow []*net.IPNet
-	Deny  []*net.IPNet
+	Allow      []*net.IPNet
+	Deny       []*net.IPNet
+	AllowHosts []string
+	DenyHosts  []string
 }
 
 func init() {
@@ -214,6 +218,8 @@ func init() {
 	flag.StringVar(&cidrs, "cidr", "0.0.0.0/0,::/0", "允许的来源 IP 范围 (CIDR),多个范围用逗号分隔")
 	flag.StringVar(&targetAllowCIDRs, "allow-target", "", "服务端允许访问的目标 CIDR，多个用逗号分隔（留空表示不限制）")
 	flag.StringVar(&targetDenyCIDRs, "deny-target", "", "服务端拒绝访问的目标 CIDR，多个用逗号分隔")
+	flag.StringVar(&targetAllowHosts, "allow-host", "", "服务端允许访问的目标主机名，多个用逗号分隔，支持 *.example.com")
+	flag.StringVar(&targetDenyHosts, "deny-host", "", "服务端拒绝访问的目标主机名，多个用逗号分隔，支持 *.example.com")
 	flag.StringVar(&dnsServer, "dns", "https://doh.pub/dns-query", "查询 ECH 公钥所用的 DNS 服务器 (支持 DoH 或 UDP，仅 wss 模式生效)")
 	flag.StringVar(&echDomain, "ech", "cloudflare-ech.com", "用于查询 ECH 公钥的域名（仅 wss 模式生效）")
 	flag.BoolVar(&fallback, "fallback", false, "是否禁用 ECH 并回落到普通 TLS 1.3（仅 wss 模式生效，默认 false）")
@@ -253,8 +259,12 @@ type FileConfig struct {
 	CIDR               *string `json:"cidr"`
 	AllowTarget        *string `json:"allow_target"`
 	DenyTarget         *string `json:"deny_target"`
+	AllowHost          *string `json:"allow_host"`
+	DenyHost           *string `json:"deny_host"`
 	AllowTargetFlag    *string `json:"allow-target"`
 	DenyTargetFlag     *string `json:"deny-target"`
+	AllowHostFlag      *string `json:"allow-host"`
+	DenyHostFlag       *string `json:"deny-host"`
 	DNS                *string `json:"dns"`
 	ECH                *string `json:"ech"`
 	IPS                *string `json:"ips"`
@@ -307,6 +317,14 @@ func loadConfigFile(path string, seen map[string]bool) error {
 	if err != nil {
 		return err
 	}
+	allowHost, err := singleStringConfigAlias("allow_host", "allow-host", fc.AllowHost, fc.AllowHostFlag)
+	if err != nil {
+		return err
+	}
+	denyHost, err := singleStringConfigAlias("deny_host", "deny-host", fc.DenyHost, fc.DenyHostFlag)
+	if err != nil {
+		return err
+	}
 	clientCA, err := singleStringConfigAlias("client_ca", "client-ca", fc.ClientCA, fc.ClientCAFlag)
 	if err != nil {
 		return err
@@ -333,6 +351,8 @@ func loadConfigFile(path string, seen map[string]bool) error {
 	applyStringConfig(seen, "cidr", fc.CIDR, &cidrs)
 	applyStringConfig(seen, "allow-target", allowTarget, &targetAllowCIDRs)
 	applyStringConfig(seen, "deny-target", denyTarget, &targetDenyCIDRs)
+	applyStringConfig(seen, "allow-host", allowHost, &targetAllowHosts)
+	applyStringConfig(seen, "deny-host", denyHost, &targetDenyHosts)
 	applyStringConfig(seen, "dns", fc.DNS, &dnsServer)
 	applyStringConfig(seen, "ech", fc.ECH, &echDomain)
 	applyStringConfig(seen, "ips", fc.IPS, &ips)
@@ -666,7 +686,7 @@ func main() {
 			log.Printf("[服务端] 警告: 未配置 token，WebSocket 连接不会进行令牌认证")
 		}
 		var err error
-		targetPolicy, err = parseTargetPolicy(targetAllowCIDRs, targetDenyCIDRs)
+		targetPolicy, err = parseTargetPolicy(targetAllowCIDRs, targetDenyCIDRs, targetAllowHosts, targetDenyHosts)
 		if err != nil {
 			log.Fatalf("[服务端] 目标访问策略无效: %v", err)
 		}
@@ -811,7 +831,7 @@ func parseIPStrategy(s string) byte {
 	}
 }
 
-func parseTargetPolicy(allowRaw, denyRaw string) (*TargetPolicy, error) {
+func parseTargetPolicy(allowRaw, denyRaw, allowHostRaw, denyHostRaw string) (*TargetPolicy, error) {
 	allow, err := parseCIDRList(allowRaw)
 	if err != nil {
 		return nil, fmt.Errorf("allow-target: %w", err)
@@ -820,7 +840,15 @@ func parseTargetPolicy(allowRaw, denyRaw string) (*TargetPolicy, error) {
 	if err != nil {
 		return nil, fmt.Errorf("deny-target: %w", err)
 	}
-	return &TargetPolicy{Allow: allow, Deny: deny}, nil
+	allowHosts, err := parseHostPatternList(allowHostRaw)
+	if err != nil {
+		return nil, fmt.Errorf("allow-host: %w", err)
+	}
+	denyHosts, err := parseHostPatternList(denyHostRaw)
+	if err != nil {
+		return nil, fmt.Errorf("deny-host: %w", err)
+	}
+	return &TargetPolicy{Allow: allow, Deny: deny, AllowHosts: allowHosts, DenyHosts: denyHosts}, nil
 }
 
 func parseCIDRList(raw string) ([]*net.IPNet, error) {
@@ -842,20 +870,98 @@ func parseCIDRList(raw string) ([]*net.IPNet, error) {
 	return nets, nil
 }
 
+func parseHostPatternList(raw string) ([]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var patterns []string
+	for _, part := range strings.Split(raw, ",") {
+		item := normalizeTargetHost(part)
+		if item == "" {
+			continue
+		}
+		if err := validateHostPattern(item); err != nil {
+			return nil, err
+		}
+		patterns = append(patterns, item)
+	}
+	return patterns, nil
+}
+
+func normalizeTargetHost(host string) string {
+	host = strings.TrimSpace(strings.ToLower(host))
+	return strings.TrimSuffix(host, ".")
+}
+
+func validateHostPattern(pattern string) error {
+	if strings.Contains(pattern, ":") {
+		return fmt.Errorf("host pattern %q 不能包含端口", pattern)
+	}
+	if strings.Contains(pattern, "*") {
+		if !strings.HasPrefix(pattern, "*.") || strings.Count(pattern, "*") != 1 {
+			return fmt.Errorf("host pattern %q 只支持前缀通配符 *.example.com", pattern)
+		}
+		pattern = strings.TrimPrefix(pattern, "*.")
+	}
+	if net.ParseIP(pattern) != nil {
+		return fmt.Errorf("host pattern %q 是 IP，目标 IP 请使用 CIDR 策略", pattern)
+	}
+	if !validHostname(pattern) {
+		return fmt.Errorf("host pattern %q 不是合法主机名", pattern)
+	}
+	return nil
+}
+
+func validHostname(host string) bool {
+	if host == "" || len(host) > 253 {
+		return false
+	}
+	labels := strings.Split(host, ".")
+	for _, label := range labels {
+		if label == "" || len(label) > 63 {
+			return false
+		}
+		if label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
+}
+
 func (p *TargetPolicy) Allows(target string) (bool, string) {
-	if p == nil || len(p.Allow) == 0 && len(p.Deny) == 0 {
+	if p == nil || len(p.Allow) == 0 && len(p.Deny) == 0 && len(p.AllowHosts) == 0 && len(p.DenyHosts) == 0 {
 		return true, ""
 	}
 	host, _, err := net.SplitHostPort(target)
 	if err != nil {
 		return false, fmt.Sprintf("目标地址格式无效: %v", err)
 	}
+	host = normalizeTargetHost(host)
 	ip := net.ParseIP(host)
 	if ip == nil {
-		if len(p.Allow) > 0 {
-			return false, "目标是域名，无法证明其属于 allow-target CIDR"
+		for _, pattern := range p.DenyHosts {
+			if hostPatternMatches(pattern, host) {
+				return false, fmt.Sprintf("目标主机 %s 命中 deny-host %s", host, pattern)
+			}
 		}
-		return true, ""
+		if len(p.AllowHosts) == 0 {
+			if len(p.Allow) > 0 {
+				return false, "目标是域名，无法证明其属于 allow-target CIDR"
+			}
+			return true, ""
+		}
+		for _, pattern := range p.AllowHosts {
+			if hostPatternMatches(pattern, host) {
+				return true, ""
+			}
+		}
+		return false, fmt.Sprintf("目标主机 %s 未命中 allow-host", host)
 	}
 	for _, n := range p.Deny {
 		if n.Contains(ip) {
@@ -863,6 +969,9 @@ func (p *TargetPolicy) Allows(target string) (bool, string) {
 		}
 	}
 	if len(p.Allow) == 0 {
+		if len(p.AllowHosts) > 0 {
+			return false, fmt.Sprintf("目标 %s 未命中 allow-target；allow-host 不适用于 IP 目标", ip)
+		}
 		return true, ""
 	}
 	for _, n := range p.Allow {
@@ -871,6 +980,14 @@ func (p *TargetPolicy) Allows(target string) (bool, string) {
 		}
 	}
 	return false, fmt.Sprintf("目标 %s 未命中 allow-target", ip)
+}
+
+func hostPatternMatches(pattern, host string) bool {
+	if strings.HasPrefix(pattern, "*.") {
+		suffix := strings.TrimPrefix(pattern, "*.")
+		return strings.HasSuffix(host, "."+suffix)
+	}
+	return host == pattern
 }
 
 func ensureTargetAllowed(target string) error {

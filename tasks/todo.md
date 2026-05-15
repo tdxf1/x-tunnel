@@ -336,3 +336,18 @@ Post Phase 8 integration stability:
 - This prevents proxy, SOCKS5, and HTTP fetch assertions from hanging indefinitely if a listener is open but the relay path stalls.
 - Verified focused integration tests with `go test -run 'TestIntegrationLocal' -count=1 ./...`: pass.
 - Verified with `go test ./...`: pass.
+
+Post Phase 8 host target policies:
+
+- Added server `-allow-host` and `-deny-host` target hostname policies with exact and `*.example.com` wildcard matching.
+- Host deny rules win before host allow rules; CIDR policies remain authoritative for IP targets.
+- Added JSON config aliases `allow_host`/`allow-host` and `deny_host`/`deny-host`.
+- Documented host target filtering in `README.md`, `docs/deployment.md`, `docs/troubleshooting.md`, and `docs/protocol.md`.
+- Added unit coverage for host policy parsing, wildcard matching, deny precedence, and invalid host patterns.
+- Added real integration coverage by proxying an allowed `localhost` target through the HTTP listener.
+- Verified focused policy tests with `go test -run 'Test(TargetPolicy|ParseTargetPolicy|LoadConfigFile)' -count=1 ./...`: pass.
+- Verified focused real integration with `go test -run TestLocalTunnelIntegration -count=1 ./...`: pass.
+- Verified `go run . -h` includes `-allow-host` and `-deny-host`.
+- Verified with `go test ./...`: pass.
+- Verified with `go test -cover ./...`: pass, `coverage: 23.1% of statements`.
+- Verified external process smoke with HTTP proxy and server `-allow-host localhost`: `host_policy_smoke=pass allow_host=localhost blocked_ip_exit=52`; the `localhost` target succeeded and the `127.0.0.1` target was rejected with server log `TCP 拒绝`.

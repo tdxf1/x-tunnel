@@ -49,9 +49,9 @@ Symptoms:
 
 Checks:
 
-- Review server `-allow-target` and `-deny-target`.
-- `-deny-target` wins before `-allow-target`.
-- Domain targets are rejected when `-allow-target` is set because the server cannot prove the pre-dial domain belongs to an allowed CIDR.
+- Review server `-allow-target`, `-deny-target`, `-allow-host`, and `-deny-host`.
+- `-deny-target` wins before `-allow-target` for IP targets; `-deny-host` wins before `-allow-host` for domain targets.
+- Domain targets are rejected when CIDR allow rules exist without a matching `-allow-host`.
 
 ## Source CIDR Rejection
 

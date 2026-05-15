@@ -142,16 +142,19 @@ func TestLoadConfigFileAppliesUnsetFlags(t *testing.T) {
 	oldListen, oldForward, oldToken := listenAddr, forwardAddr, token
 	oldMetrics, oldConnectionNum := metricsAddr, connectionNum
 	oldAllow, oldDeny := targetAllowCIDRs, targetDenyCIDRs
+	oldAllowHosts, oldDenyHosts := targetAllowHosts, targetDenyHosts
 	oldClientCA, oldClientCert, oldClientKey := clientCAFile, clientCertFile, clientKeyFile
 	defer func() {
 		cfg = oldCfg
 		listenAddr, forwardAddr, token = oldListen, oldForward, oldToken
 		metricsAddr, connectionNum = oldMetrics, oldConnectionNum
 		targetAllowCIDRs, targetDenyCIDRs = oldAllow, oldDeny
+		targetAllowHosts, targetDenyHosts = oldAllowHosts, oldDenyHosts
 		clientCAFile, clientCertFile, clientKeyFile = oldClientCA, oldClientCert, oldClientKey
 	}()
 	listenAddr, forwardAddr, token, metricsAddr = "", "", "", ""
 	targetAllowCIDRs, targetDenyCIDRs = "", ""
+	targetAllowHosts, targetDenyHosts = "", ""
 	clientCAFile, clientCertFile, clientKeyFile = "", "", ""
 	cfg.DialTimeout = 3 * time.Second
 	cfg.ReconnectJitter = 500 * time.Millisecond
@@ -165,6 +168,8 @@ func TestLoadConfigFileAppliesUnsetFlags(t *testing.T) {
 		"metrics": "127.0.0.1:19099",
 		"allow-target": "10.0.0.0/8",
 		"deny_target": "10.0.9.0/24",
+		"allow-host": "api.example.com",
+		"deny_host": "*.blocked.example.com",
 		"client-ca": "ca.pem",
 		"client_cert": "client.pem",
 		"client-key": "client-key.pem",
@@ -195,6 +200,12 @@ func TestLoadConfigFileAppliesUnsetFlags(t *testing.T) {
 	}
 	if targetDenyCIDRs != "10.0.9.0/24" {
 		t.Fatalf("targetDenyCIDRs = %q", targetDenyCIDRs)
+	}
+	if targetAllowHosts != "api.example.com" {
+		t.Fatalf("targetAllowHosts = %q", targetAllowHosts)
+	}
+	if targetDenyHosts != "*.blocked.example.com" {
+		t.Fatalf("targetDenyHosts = %q", targetDenyHosts)
 	}
 	if clientCAFile != "ca.pem" || clientCertFile != "client.pem" || clientKeyFile != "client-key.pem" {
 		t.Fatalf("client mTLS config = %q %q %q", clientCAFile, clientCertFile, clientKeyFile)
@@ -336,6 +347,16 @@ func TestLoadConfigFileRejectsDuplicateTargetAliases(t *testing.T) {
 	}
 }
 
+func TestLoadConfigFileRejectsDuplicateHostAliases(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"allow_host":"api.example.com","allow-host":"www.example.com"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadConfigFile(path, nil); err == nil {
+		t.Fatal("loadConfigFile accepted duplicate allow host aliases")
+	}
+}
+
 func TestLoadConfigFileRejectsDuplicateClientAliases(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(`{"client_ca":"ca.pem","client-ca":"other-ca.pem"}`), 0600); err != nil {
@@ -408,7 +429,7 @@ func TestValidateDialIPOverride(t *testing.T) {
 }
 
 func TestTargetPolicyAllows(t *testing.T) {
-	policy, err := parseTargetPolicy("10.0.0.0/8,2001:db8::/32", "10.0.9.0/24")
+	policy, err := parseTargetPolicy("10.0.0.0/8,2001:db8::/32", "10.0.9.0/24", "", "")
 	if err != nil {
 		t.Fatalf("parseTargetPolicy returned error: %v", err)
 	}
@@ -435,7 +456,7 @@ func TestTargetPolicyAllows(t *testing.T) {
 }
 
 func TestTargetPolicyDenyOnlyAllowsDomains(t *testing.T) {
-	policy, err := parseTargetPolicy("", "127.0.0.0/8")
+	policy, err := parseTargetPolicy("", "127.0.0.0/8", "", "")
 	if err != nil {
 		t.Fatalf("parseTargetPolicy returned error: %v", err)
 	}
@@ -448,11 +469,73 @@ func TestTargetPolicyDenyOnlyAllowsDomains(t *testing.T) {
 }
 
 func TestParseTargetPolicyRejectsInvalidCIDR(t *testing.T) {
-	if _, err := parseTargetPolicy("not-a-cidr", ""); err == nil {
+	if _, err := parseTargetPolicy("not-a-cidr", "", "", ""); err == nil {
 		t.Fatal("parseTargetPolicy accepted invalid allow CIDR")
 	}
-	if _, err := parseTargetPolicy("", "not-a-cidr"); err == nil {
+	if _, err := parseTargetPolicy("", "not-a-cidr", "", ""); err == nil {
 		t.Fatal("parseTargetPolicy accepted invalid deny CIDR")
+	}
+}
+
+func TestTargetPolicyAllowsHosts(t *testing.T) {
+	policy, err := parseTargetPolicy("", "", "api.example.com,*.svc.example.com", "bad.example.com,*.blocked.example.com")
+	if err != nil {
+		t.Fatalf("parseTargetPolicy returned error: %v", err)
+	}
+	tests := []struct {
+		name   string
+		target string
+		want   bool
+	}{
+		{name: "exact", target: "api.example.com:443", want: true},
+		{name: "trailing dot", target: "api.example.com.:443", want: true},
+		{name: "case insensitive", target: "API.EXAMPLE.COM:443", want: true},
+		{name: "wildcard subdomain", target: "a.svc.example.com:443", want: true},
+		{name: "wildcard nested", target: "a.b.svc.example.com:443", want: true},
+		{name: "wildcard excludes apex", target: "svc.example.com:443", want: false},
+		{name: "wildcard does not overmatch suffix", target: "badsvc.example.com:443", want: false},
+		{name: "deny host wins", target: "bad.example.com:443", want: false},
+		{name: "deny wildcard wins", target: "api.blocked.example.com:443", want: false},
+		{name: "ip denied by host allow policy", target: "127.0.0.1:443", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, _ := policy.Allows(tt.target)
+			if got != tt.want {
+				t.Fatalf("TargetPolicy.Allows(%q) = %v, want %v", tt.target, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTargetPolicyDenyHostOnlyAllowsOtherTargets(t *testing.T) {
+	policy, err := parseTargetPolicy("", "", "", "blocked.example.com")
+	if err != nil {
+		t.Fatalf("parseTargetPolicy returned error: %v", err)
+	}
+	if ok, _ := policy.Allows("blocked.example.com:443"); ok {
+		t.Fatal("deny-host policy allowed blocked host")
+	}
+	if ok, _ := policy.Allows("api.example.com:443"); !ok {
+		t.Fatal("deny-host-only policy rejected unrelated host")
+	}
+	if ok, _ := policy.Allows("127.0.0.1:443"); !ok {
+		t.Fatal("deny-host-only policy rejected IP target")
+	}
+}
+
+func TestParseTargetPolicyRejectsInvalidHostPattern(t *testing.T) {
+	if _, err := parseTargetPolicy("", "", "*example.com", ""); err == nil {
+		t.Fatal("parseTargetPolicy accepted invalid wildcard host")
+	}
+	if _, err := parseTargetPolicy("", "", "127.0.0.1", ""); err == nil {
+		t.Fatal("parseTargetPolicy accepted IP host pattern")
+	}
+	if _, err := parseTargetPolicy("", "", "api.example.com:443", ""); err == nil {
+		t.Fatal("parseTargetPolicy accepted host pattern with port")
+	}
+	if _, err := parseTargetPolicy("", "", "bad host.example", ""); err == nil {
+		t.Fatal("parseTargetPolicy accepted host pattern with whitespace")
 	}
 }
 

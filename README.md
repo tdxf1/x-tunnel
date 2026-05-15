@@ -76,7 +76,8 @@ curl http://127.0.0.1:12000/
   -token "$TOKEN" \
   -cidr 203.0.113.0/24 \
   -allow-target 10.0.0.0/8 \
-  -deny-target 10.0.9.0/24
+  -deny-target 10.0.9.0/24 \
+  -allow-host api.internal.example.com
 ```
 
 See [docs/deployment.md](docs/deployment.md) for token limits, source filtering, target filtering, and TLS/ECH notes.
@@ -112,7 +113,7 @@ curl http://127.0.0.1:9090/metrics
 
 Use `-config` with JSON when command lines get long. Explicit flags override config file values.
 Most keys mirror flag names; `-n` is `connections`, and target filter keys accept either
-`allow-target`/`deny-target` or `allow_target`/`deny_target`.
+hyphen or underscore forms, for example `allow-target` or `allow_target`.
 
 ```json
 {
@@ -121,6 +122,7 @@ Most keys mirror flag names; `-n` is `connections`, and target filter keys accep
   "token": "local-test-token",
   "allow-target": "10.0.0.0/8",
   "deny_target": "10.0.9.0/24",
+  "allow-host": "api.internal.example.com,*.svc.example.com",
   "connections": 1,
   "dial_timeout": "5s",
   "reconnect_max_delay": "30s",
@@ -141,7 +143,7 @@ uses underscore keys, for example `"dial_timeout": "5s"`.
 - `认证失败：Token 不匹配或未提供`: client and server `-token` values differ, or the token contains characters that are not valid WebSocket subprotocol token characters.
 - `DNS 查询失败` or `未找到 ECH 参数`: the configured `-dns` resolver could not return HTTPS/ECH records for `-ech`. Use `-fallback` only when standard TLS without ECH is acceptable.
 - `无可用 smux 通道`: the local listener accepted a connection before any WebSocket/smux channel was ready, or every channel is reconnecting.
-- `TCP 拒绝` or `UDP 拒绝`: the target was blocked by `-allow-target` or `-deny-target`.
+- `TCP 拒绝` or `UDP 拒绝`: the target was blocked by `-allow-target`, `-deny-target`, `-allow-host`, or `-deny-host`.
 - `ws 模式已忽略 insecure 参数`: `-insecure` only applies to `wss://`.
 
 ## Test

@@ -41,6 +41,11 @@ func TestLocalTunnelIntegration(t *testing.T) {
 	}))
 	defer origin.Close()
 	targetAddr := strings.TrimPrefix(origin.URL, "http://")
+	_, targetPort, err := net.SplitHostPort(targetAddr)
+	if err != nil {
+		t.Fatalf("split origin addr: %v", err)
+	}
+	localhostTargetAddr := net.JoinHostPort("localhost", targetPort)
 
 	binPath := filepath.Join(t.TempDir(), "x-tunnel")
 	build := exec.CommandContext(ctx, "go", "build", "-o", binPath, ".")
@@ -63,6 +68,7 @@ func TestLocalTunnelIntegration(t *testing.T) {
 		"-token", "integration-token",
 		"-cidr", "127.0.0.1/32",
 		"-allow-target", "127.0.0.0/8",
+		"-allow-host", "localhost",
 		"-metrics", metricsAddr,
 	)
 	defer stopProcess(server)
@@ -84,6 +90,7 @@ func TestLocalTunnelIntegration(t *testing.T) {
 
 	assertBody(t, "tcp forward", fetchHTTP(t, "http://"+tcpAddr+"/payload"), body)
 	assertBody(t, "http proxy", fetchViaHTTPProxy(t, httpProxyAddr, "http://"+targetAddr+"/payload"), body)
+	assertBody(t, "http proxy allow-host", fetchViaHTTPProxy(t, httpProxyAddr, "http://"+localhostTargetAddr+"/payload"), body)
 	assertBody(t, "http connect", fetchViaHTTPConnect(t, httpProxyAddr, targetAddr, "/payload"), body)
 	assertBody(t, "socks5", fetchViaSOCKS5(t, socksAddr, targetAddr, "/payload"), body)
 	udpTargetAddr := startUDPEcho(t)

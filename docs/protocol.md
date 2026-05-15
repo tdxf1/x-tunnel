@@ -236,21 +236,19 @@ Current behavior:
 ### Reliability Risks
 
 - Remote TCP dial failures are not propagated as structured local SOCKS5/HTTP errors.
-- Fixed reconnect timing can cause retry storms when many clients reconnect together.
-- Some timeout values are hard-coded instead of using `GlobalConfig`.
+- Reconnect timing and major network timeouts are configurable, but future paths should keep using `GlobalConfig` rather than reintroducing literals.
 - Graceful shutdown and listener lifecycle are not centralized.
 
 ### Security Risks
 
 - WebSocket token auth is a bearer-token subprotocol check only.
 - `-insecure` and ECH fallback behavior must stay explicit in logs because misuse weakens TLS validation.
-- There is no target allow/deny policy for server-side egress.
+- Server-side egress policy is pre-dial only: CIDR rules apply to literal IP targets, and host rules apply to literal domain targets before DNS resolution. It does not prove the final resolved IP for a domain.
 
 ### Testability Risks
 
-- The project now has unit coverage for protocol helpers, but broad network paths still need integration tests.
-- Protocol encoders/decoders are embedded in the main file and can be extracted once coverage is stronger.
-- Local smoke tests exist only as documented manual commands, not as automated integration tests.
+- The project has unit coverage for protocol helpers and automated local integration coverage, but broader load, failure-injection, and cross-platform tests are still future work.
+- Protocol encoders/decoders are extracted into `protocol.go`; SOCKS5 parsing remains in the main file.
 
 ## 11. Evolution Rules
 

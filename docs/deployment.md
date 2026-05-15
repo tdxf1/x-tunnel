@@ -20,22 +20,26 @@ Use `-cidr` on the server to restrict which client source IPs may connect:
 
 ## Target Filtering
 
-Use `-allow-target` and `-deny-target` on the server to restrict target IP CIDRs:
+Use `-allow-target` and `-deny-target` on the server to restrict target IP CIDRs.
+Use `-allow-host` and `-deny-host` to restrict domain targets before DNS resolution:
 
 ```bash
 ./x-tunnel \
   -l ws://0.0.0.0:18080/tunnel \
   -token "$TOKEN" \
   -allow-target 10.0.0.0/8,192.168.0.0/16 \
-  -deny-target 10.0.9.0/24
+  -deny-target 10.0.9.0/24 \
+  -allow-host api.internal.example.com,*.svc.example.com \
+  -deny-host bad.internal.example.com
 ```
 
 Policy order:
 
-1. `-deny-target` wins first.
-2. If `-allow-target` is set, the target IP must match at least one allowed CIDR.
-3. Domain targets are rejected when `-allow-target` is set because the server cannot prove the pre-dial domain belongs to an allowed CIDR.
-4. Domain targets are allowed under deny-only policy unless the client sends a literal denied IP.
+1. `-deny-target` wins first for IP targets; `-deny-host` wins first for domain targets.
+2. If any allow policy is set, the target must match the allow policy for its type: CIDR for IPs, host pattern for domains.
+3. Host wildcards only support the `*.example.com` form and match subdomains, not the apex `example.com`.
+4. Domain targets are still rejected when only CIDR allow rules exist because the server cannot prove the pre-dial domain belongs to an allowed CIDR.
+5. Domain targets are allowed under deny-only policy unless the hostname matches `-deny-host`.
 
 ## TLS, ECH, and `-insecure`
 
