@@ -329,3 +329,10 @@ Post Phase 8 runtime tunables:
 - Verified `go run . -h` includes `-dial-timeout`, `-reconnect-max-delay`, and the other duration flags.
 - Verified with `go test ./...`: pass.
 - Verified with `go test -cover ./...`: pass, `coverage: 20.7% of statements`.
+
+Post Phase 8 integration stability:
+
+- Added explicit 5s HTTP/client/connection deadlines to integration test helpers.
+- This prevents proxy, SOCKS5, and HTTP fetch assertions from hanging indefinitely if a listener is open but the relay path stalls.
+- Verified focused integration tests with `go test -run 'TestIntegrationLocal' -count=1 ./...`: pass.
+- Verified with `go test ./...`: pass.

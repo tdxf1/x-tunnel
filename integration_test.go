@@ -25,6 +25,8 @@ import (
 	"time"
 )
 
+const integrationIOTimeout = 5 * time.Second
+
 func TestLocalTunnelIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -298,7 +300,8 @@ func waitLogContains(t *testing.T, ctx context.Context, path, needle string) {
 
 func fetchHTTP(t *testing.T, rawURL string) string {
 	t.Helper()
-	resp, err := http.Get(rawURL)
+	client := &http.Client{Timeout: integrationIOTimeout}
+	resp, err := client.Get(rawURL)
 	if err != nil {
 		t.Fatalf("GET %s: %v", rawURL, err)
 	}
@@ -312,7 +315,10 @@ func fetchViaHTTPProxy(t *testing.T, proxyAddr, rawURL string) string {
 	if err != nil {
 		t.Fatalf("parse proxy URL: %v", err)
 	}
-	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+	client := &http.Client{
+		Timeout:   integrationIOTimeout,
+		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
+	}
 	resp, err := client.Get(rawURL)
 	if err != nil {
 		t.Fatalf("proxy GET %s: %v", rawURL, err)
@@ -328,6 +334,9 @@ func fetchViaHTTPConnect(t *testing.T, proxyAddr, targetAddr, path string) strin
 		t.Fatalf("dial HTTP proxy: %v", err)
 	}
 	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(integrationIOTimeout)); err != nil {
+		t.Fatalf("set HTTP proxy deadline: %v", err)
+	}
 
 	fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", targetAddr, targetAddr)
 	br := bufio.NewReader(conn)
@@ -358,6 +367,9 @@ func fetchViaSOCKS5(t *testing.T, proxyAddr, targetAddr, path string) string {
 		t.Fatalf("dial SOCKS5 proxy: %v", err)
 	}
 	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(integrationIOTimeout)); err != nil {
+		t.Fatalf("set SOCKS5 deadline: %v", err)
+	}
 
 	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
 		t.Fatalf("write SOCKS5 greeting: %v", err)
@@ -438,6 +450,9 @@ func fetchUDPViaSOCKS5(t *testing.T, proxyAddr, targetAddr string, payload []byt
 		t.Fatalf("dial SOCKS5 proxy: %v", err)
 	}
 	defer control.Close()
+	if err := control.SetDeadline(time.Now().Add(integrationIOTimeout)); err != nil {
+		t.Fatalf("set SOCKS5 control deadline: %v", err)
+	}
 
 	if _, err := control.Write([]byte{0x05, 0x01, 0x00}); err != nil {
 		t.Fatalf("write SOCKS5 greeting: %v", err)
@@ -460,7 +475,7 @@ func fetchUDPViaSOCKS5(t *testing.T, proxyAddr, targetAddr string, payload []byt
 		t.Fatalf("listen local UDP: %v", err)
 	}
 	defer udpConn.Close()
-	if err := udpConn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+	if err := udpConn.SetDeadline(time.Now().Add(integrationIOTimeout)); err != nil {
 		t.Fatalf("set UDP deadline: %v", err)
 	}
 
