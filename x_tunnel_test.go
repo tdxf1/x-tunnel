@@ -276,6 +276,35 @@ func TestValidateGlobalConfig(t *testing.T) {
 	}
 }
 
+func TestBuildDNSQueryValidatesDomain(t *testing.T) {
+	query, err := buildDNSQuery("example.com.", typeHTTPS)
+	if err != nil {
+		t.Fatalf("buildDNSQuery returned error: %v", err)
+	}
+	wantQuestion := []byte{
+		7, 'e', 'x', 'a', 'm', 'p', 'l', 'e',
+		3, 'c', 'o', 'm',
+		0,
+		byte(typeHTTPS >> 8), byte(typeHTTPS), 0, 1,
+	}
+	if !bytes.Equal(query[12:], wantQuestion) {
+		t.Fatalf("DNS question = %v, want %v", query[12:], wantQuestion)
+	}
+
+	invalid := []string{
+		"",
+		".",
+		"example..com",
+		strings.Repeat("a", 64) + ".example.com",
+		strings.Repeat("a", 250) + ".com",
+	}
+	for _, domain := range invalid {
+		if _, err := buildDNSQuery(domain, typeHTTPS); err == nil {
+			t.Fatalf("buildDNSQuery(%q) accepted invalid domain", domain)
+		}
+	}
+}
+
 func TestValidateMTLSConfig(t *testing.T) {
 	oldCert, oldKey := certFile, keyFile
 	oldClientCA, oldClientCert, oldClientKey := clientCAFile, clientCertFile, clientKeyFile

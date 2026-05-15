@@ -351,3 +351,12 @@ Post Phase 8 host target policies:
 - Verified with `go test ./...`: pass.
 - Verified with `go test -cover ./...`: pass, `coverage: 23.1% of statements`.
 - Verified external process smoke with HTTP proxy and server `-allow-host localhost`: `host_policy_smoke=pass allow_host=localhost blocked_ip_exit=52`; the `localhost` target succeeded and the `127.0.0.1` target was rejected with server log `TCP 拒绝`.
+
+Post Phase 8 DNS query hardening:
+
+- Hardened DNS query construction for ECH lookups so invalid domains, empty labels, labels over 63 bytes, and domains over 253 bytes are rejected before encoding.
+- Updated UDP DNS and DoH paths to return query construction errors instead of silently truncating label lengths.
+- Added unit coverage for valid trailing-dot normalization and invalid DNS names.
+- Verified focused DNS test with `go test -run TestBuildDNSQueryValidatesDomain -count=1 ./...`: pass.
+- Verified with `go test ./...`: pass.
+- Verified with `go test -cover ./...`: pass, `coverage: 24.0% of statements`.

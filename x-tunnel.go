@@ -1677,7 +1677,10 @@ func queryDNSUDP(domain, dnsServer string) (string, error) {
 		dnsServer = dnsServer + ":53"
 	}
 
-	query := buildDNSQuery(domain, typeHTTPS)
+	query, err := buildDNSQuery(domain, typeHTTPS)
+	if err != nil {
+		return "", err
+	}
 
 	conn, err := net.Dial("udp", dnsServer)
 	if err != nil {
@@ -1708,7 +1711,10 @@ func queryDoH(domain, dohURL string) (string, error) {
 		return "", err
 	}
 	q := u.Query()
-	dnsQuery := buildDNSQuery(domain, typeHTTPS)
+	dnsQuery, err := buildDNSQuery(domain, typeHTTPS)
+	if err != nil {
+		return "", err
+	}
 	dnsBase64 := base64.RawURLEncoding.EncodeToString(dnsQuery)
 	q.Set("dns", dnsBase64)
 	u.RawQuery = q.Encode()
@@ -1735,7 +1741,11 @@ func queryDoH(domain, dohURL string) (string, error) {
 	return parseDNSResponse(body)
 }
 
-func buildDNSQuery(domain string, qtype uint16) []byte {
+func buildDNSQuery(domain string, qtype uint16) ([]byte, error) {
+	domain = normalizeDNSName(domain)
+	if err := validateDNSName(domain); err != nil {
+		return nil, err
+	}
 	query := make([]byte, 0, 512)
 	query = append(query, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)
 	for _, label := range strings.Split(domain, ".") {
@@ -1744,7 +1754,29 @@ func buildDNSQuery(domain string, qtype uint16) []byte {
 	}
 	query = append(query, 0x00)
 	query = append(query, byte(qtype>>8), byte(qtype), 0x00, 0x01)
-	return query
+	return query, nil
+}
+
+func normalizeDNSName(domain string) string {
+	return strings.TrimSuffix(strings.TrimSpace(domain), ".")
+}
+
+func validateDNSName(domain string) error {
+	if domain == "" {
+		return fmt.Errorf("DNS 域名不能为空")
+	}
+	if len(domain) > 253 {
+		return fmt.Errorf("DNS 域名过长")
+	}
+	for _, label := range strings.Split(domain, ".") {
+		if label == "" {
+			return fmt.Errorf("DNS 域名包含空标签")
+		}
+		if len(label) > 63 {
+			return fmt.Errorf("DNS 标签 %q 过长", label)
+		}
+	}
+	return nil
 }
 
 func parseDNSResponse(response []byte) (string, error) {
