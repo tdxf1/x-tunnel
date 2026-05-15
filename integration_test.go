@@ -4,8 +4,14 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -142,6 +148,72 @@ func TestIntegrationLocalWSSFallback(t *testing.T) {
 	waitLogContains(t, ctx, serverLog, "协议协商成功")
 
 	assertBody(t, "wss tcp forward", fetchHTTP(t, "http://"+tcpAddr+"/payload"), body)
+}
+
+func TestIntegrationLocalWSSMTLS(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	const body = "x-tunnel mtls payload\n"
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer origin.Close()
+	targetAddr := strings.TrimPrefix(origin.URL, "http://")
+
+	binPath := filepath.Join(t.TempDir(), "x-tunnel")
+	build := exec.CommandContext(ctx, "go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("go build failed: %v\n%s", err, out)
+	}
+	caPath, clientCertPath, clientKeyPath := writeClientMTLSFiles(t)
+
+	wssAddr := freeTCPAddr(t)
+	tcpAddr := freeTCPAddr(t)
+	serverLog := filepath.Join(t.TempDir(), "mtls-server.log")
+	clientLog := filepath.Join(t.TempDir(), "mtls-client.log")
+	badClientLog := filepath.Join(t.TempDir(), "mtls-bad-client.log")
+
+	server := startXTunnel(t, ctx, binPath, serverLog,
+		"-l", "wss://"+wssAddr+"/tunnel",
+		"-token", "mtls-token",
+		"-cidr", "127.0.0.1/32",
+		"-allow-target", "127.0.0.0/8",
+		"-client-ca", caPath,
+	)
+	defer stopProcess(server)
+	waitTCP(t, ctx, wssAddr)
+	waitLogContains(t, ctx, serverLog, "mTLS 客户端证书认证已启用")
+
+	badClient := startXTunnel(t, ctx, binPath, badClientLog,
+		"-l", "tcp://"+freeTCPAddr(t)+"/"+targetAddr,
+		"-f", "wss://"+wssAddr+"/tunnel",
+		"-token", "mtls-token",
+		"-n", "1",
+		"-insecure",
+	)
+	defer stopProcess(badClient)
+	waitLogContains(t, ctx, badClientLog, "连接失败")
+
+	client := startXTunnel(t, ctx, binPath, clientLog,
+		"-l", "tcp://"+tcpAddr+"/"+targetAddr,
+		"-f", "wss://"+wssAddr+"/tunnel",
+		"-token", "mtls-token",
+		"-n", "1",
+		"-insecure",
+		"-client-cert", clientCertPath,
+		"-client-key", clientKeyPath,
+	)
+	defer stopProcess(client)
+	waitTCP(t, ctx, tcpAddr)
+	waitLogContains(t, ctx, clientLog, "协议协商成功")
+	waitLogContains(t, ctx, serverLog, "协议协商成功")
+
+	assertBody(t, "wss mtls tcp forward", fetchHTTP(t, "http://"+tcpAddr+"/payload"), body)
 }
 
 func startXTunnel(t *testing.T, ctx context.Context, binPath, logPath string, args ...string) *exec.Cmd {
@@ -515,5 +587,65 @@ func assertMetrics(t *testing.T, got string) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("metrics missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func writeClientMTLSFiles(t *testing.T) (string, string, string) {
+	t.Helper()
+	dir := t.TempDir()
+
+	caKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate CA key: %v", err)
+	}
+	caTemplate := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "x-tunnel-test-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("create CA cert: %v", err)
+	}
+
+	clientKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate client key: %v", err)
+	}
+	clientTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "x-tunnel-test-client"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	clientDER, err := x509.CreateCertificate(rand.Reader, clientTemplate, caTemplate, &clientKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("create client cert: %v", err)
+	}
+
+	caPath := filepath.Join(dir, "ca.pem")
+	clientCertPath := filepath.Join(dir, "client.pem")
+	clientKeyPath := filepath.Join(dir, "client-key.pem")
+	writePEMFile(t, caPath, "CERTIFICATE", caDER)
+	writePEMFile(t, clientCertPath, "CERTIFICATE", clientDER)
+	writePEMFile(t, clientKeyPath, "RSA PRIVATE KEY", x509.MarshalPKCS1PrivateKey(clientKey))
+	return caPath, clientCertPath, clientKeyPath
+}
+
+func writePEMFile(t *testing.T, path, blockType string, bytes []byte) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create %s: %v", path, err)
+	}
+	defer f.Close()
+	if err := pem.Encode(f, &pem.Block{Type: blockType, Bytes: bytes}); err != nil {
+		t.Fatalf("write PEM %s: %v", path, err)
 	}
 }

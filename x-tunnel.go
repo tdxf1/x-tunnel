@@ -135,6 +135,9 @@ var (
 	udpBlockPortsStr string
 	certFile         string
 	keyFile          string
+	clientCAFile     string
+	clientCertFile   string
+	clientKeyFile    string
 	configFile       string
 	token            string
 	showVersion      bool
@@ -202,6 +205,9 @@ func init() {
 	flag.BoolVar(&insecure, "insecure", false, "客户端忽略证书校验（仅 wss 模式生效）")
 	flag.StringVar(&certFile, "cert", "", "TLS证书文件路径（默认:自动生成，仅服务端）")
 	flag.StringVar(&keyFile, "key", "", "TLS密钥文件路径（默认:自动生成，仅服务端）")
+	flag.StringVar(&clientCAFile, "client-ca", "", "服务端用于校验客户端证书的 CA PEM 文件（仅 wss 服务端）")
+	flag.StringVar(&clientCertFile, "client-cert", "", "客户端 mTLS 证书 PEM 文件（仅 wss 客户端）")
+	flag.StringVar(&clientKeyFile, "client-key", "", "客户端 mTLS 私钥 PEM 文件（仅 wss 客户端）")
 	flag.StringVar(&token, "token", "", "身份验证令牌（WebSocket Subprotocol）")
 	flag.BoolVar(&showVersion, "version", false, "输出版本信息并退出")
 	flag.StringVar(&metricsAddr, "metrics", "", "可选 metrics HTTP 监听地址，如 127.0.0.1:9090")
@@ -226,6 +232,12 @@ type FileConfig struct {
 	Block           *string `json:"block"`
 	Cert            *string `json:"cert"`
 	Key             *string `json:"key"`
+	ClientCA        *string `json:"client_ca"`
+	ClientCert      *string `json:"client_cert"`
+	ClientKey       *string `json:"client_key"`
+	ClientCAFlag    *string `json:"client-ca"`
+	ClientCertFlag  *string `json:"client-cert"`
+	ClientKeyFlag   *string `json:"client-key"`
 	Token           *string `json:"token"`
 	Metrics         *string `json:"metrics"`
 	CIDR            *string `json:"cidr"`
@@ -275,12 +287,27 @@ func loadConfigFile(path string, seen map[string]bool) error {
 	if err != nil {
 		return err
 	}
+	clientCA, err := singleStringConfigAlias("client_ca", "client-ca", fc.ClientCA, fc.ClientCAFlag)
+	if err != nil {
+		return err
+	}
+	clientCert, err := singleStringConfigAlias("client_cert", "client-cert", fc.ClientCert, fc.ClientCertFlag)
+	if err != nil {
+		return err
+	}
+	clientKey, err := singleStringConfigAlias("client_key", "client-key", fc.ClientKey, fc.ClientKeyFlag)
+	if err != nil {
+		return err
+	}
 	applyStringConfig(seen, "l", fc.Listen, &listenAddr)
 	applyStringConfig(seen, "f", fc.Forward, &forwardAddr)
 	applyStringConfig(seen, "ip", fc.IP, &ipAddr)
 	applyStringConfig(seen, "block", fc.Block, &udpBlockPortsStr)
 	applyStringConfig(seen, "cert", fc.Cert, &certFile)
 	applyStringConfig(seen, "key", fc.Key, &keyFile)
+	applyStringConfig(seen, "client-ca", clientCA, &clientCAFile)
+	applyStringConfig(seen, "client-cert", clientCert, &clientCertFile)
+	applyStringConfig(seen, "client-key", clientKey, &clientKeyFile)
 	applyStringConfig(seen, "token", fc.Token, &token)
 	applyStringConfig(seen, "metrics", fc.Metrics, &metricsAddr)
 	applyStringConfig(seen, "cidr", fc.CIDR, &cidrs)
@@ -315,6 +342,41 @@ func applyStringConfig(seen map[string]bool, flagName string, value *string, tar
 	if value != nil && !seen[flagName] {
 		*target = *value
 	}
+}
+
+func validateCertificatePair(certPath, keyPath string) error {
+	if certPath == "" && keyPath == "" {
+		return nil
+	}
+	if certPath == "" || keyPath == "" {
+		return fmt.Errorf("证书和私钥必须同时配置")
+	}
+	return nil
+}
+
+func validateMTLSConfig(isServer bool, serverScheme string) error {
+	if err := validateCertificatePair(certFile, keyFile); err != nil {
+		return fmt.Errorf("server cert/key: %w", err)
+	}
+	if err := validateCertificatePair(clientCertFile, clientKeyFile); err != nil {
+		return fmt.Errorf("client cert/key: %w", err)
+	}
+	if isServer {
+		if clientCAFile != "" && serverScheme != "wss" {
+			return fmt.Errorf("-client-ca 只能用于 wss 服务端")
+		}
+		if clientCertFile != "" || clientKeyFile != "" {
+			return fmt.Errorf("-client-cert/-client-key 只能用于客户端模式")
+		}
+		return nil
+	}
+	if certFile != "" || keyFile != "" {
+		return fmt.Errorf("-cert/-key 只能用于服务端模式")
+	}
+	if clientCAFile != "" {
+		return fmt.Errorf("-client-ca 只能用于服务端模式")
+	}
+	return nil
 }
 
 func splitCommaList(raw string) []string {
@@ -476,6 +538,15 @@ func main() {
 	if isServer && (serverListeners != 1 || len(listeners) != 1) {
 		log.Fatalf("[配置] 服务端模式只能配置一个 ws:// 或 wss:// 监听地址，不能与客户端监听器混用")
 	}
+	serverScheme := ""
+	if isServer {
+		if u, err := url.Parse(listenAddr); err == nil {
+			serverScheme = strings.ToLower(u.Scheme)
+		}
+	}
+	if err := validateMTLSConfig(isServer, serverScheme); err != nil {
+		log.Fatalf("[配置] mTLS 配置无效: %v", err)
+	}
 
 	// ================= 服务端模式 =================
 	if isServer {
@@ -528,6 +599,9 @@ func main() {
 	}
 	if forwardURL.Host == "" {
 		log.Fatalf("[客户端] 服务地址必须包含 host:port")
+	}
+	if (clientCertFile != "" || clientKeyFile != "") && scheme != "wss" {
+		log.Fatalf("[客户端] -client-cert/-client-key 只能用于 wss:// 服务地址")
 	}
 
 	if scheme == "wss" {
@@ -1274,7 +1348,7 @@ func buildTLSConfigWithECH(serverName string, echList []byte) (*tls.Config, erro
 	if err != nil {
 		return nil, err
 	}
-	return &tls.Config{
+	cfgTLS := &tls.Config{
 		MinVersion:                     tls.VersionTLS13,
 		ServerName:                     serverName,
 		EncryptedClientHelloConfigList: echList,
@@ -1282,7 +1356,11 @@ func buildTLSConfigWithECH(serverName string, echList []byte) (*tls.Config, erro
 			return errors.New("服务器拒绝 ECH")
 		},
 		RootCAs: roots,
-	}, nil
+	}
+	if err := applyClientCertificate(cfgTLS); err != nil {
+		return nil, err
+	}
+	return cfgTLS, nil
 }
 
 func buildStandardTLSConfig(serverName string) (*tls.Config, error) {
@@ -1290,12 +1368,56 @@ func buildStandardTLSConfig(serverName string) (*tls.Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &tls.Config{
+	cfgTLS := &tls.Config{
 		MinVersion:         tls.VersionTLS13,
 		ServerName:         serverName,
 		RootCAs:            roots,
 		InsecureSkipVerify: insecure, // 修正：fallback/标准TLS也要支持 -insecure
-	}, nil
+	}
+	if err := applyClientCertificate(cfgTLS); err != nil {
+		return nil, err
+	}
+	return cfgTLS, nil
+}
+
+func applyClientCertificate(cfgTLS *tls.Config) error {
+	if clientCertFile == "" && clientKeyFile == "" {
+		return nil
+	}
+	if err := validateCertificatePair(clientCertFile, clientKeyFile); err != nil {
+		return err
+	}
+	cert, err := tls.LoadX509KeyPair(clientCertFile, clientKeyFile)
+	if err != nil {
+		return fmt.Errorf("加载客户端证书失败: %w", err)
+	}
+	cfgTLS.Certificates = append(cfgTLS.Certificates, cert)
+	return nil
+}
+
+func loadCertPoolFromFile(path string) (*x509.CertPool, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(raw) {
+		return nil, fmt.Errorf("没有找到可用 PEM CA 证书")
+	}
+	return pool, nil
+}
+
+func configureServerClientAuth(cfgTLS *tls.Config) error {
+	if clientCAFile == "" {
+		return nil
+	}
+	pool, err := loadCertPoolFromFile(clientCAFile)
+	if err != nil {
+		return err
+	}
+	cfgTLS.ClientAuth = tls.RequireAndVerifyClientCert
+	cfgTLS.ClientCAs = pool
+	return nil
 }
 
 func buildUnifiedTLSConfig(serverName string) (*tls.Config, error) {
@@ -1649,6 +1771,12 @@ func runWebSocketServer(ctx context.Context, addr string) {
 	if u.Scheme == "wss" {
 		if certFile != "" && keyFile != "" {
 			server.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS13}
+			if err := configureServerClientAuth(server.TLSConfig); err != nil {
+				log.Fatalf("[服务端] mTLS 配置失败: %v", err)
+			}
+			if clientCAFile != "" {
+				log.Printf("[服务端] mTLS 客户端证书认证已启用")
+			}
 			log.Printf("[服务端] WSS 启动 %s%s", u.Host, path)
 			if err := server.ListenAndServeTLS(certFile, keyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Fatalf("[服务端] WSS 启动失败: %v", err)
@@ -1659,6 +1787,12 @@ func runWebSocketServer(ctx context.Context, addr string) {
 				log.Fatalf("[服务端] 生成自签名证书失败: %v", err)
 			}
 			server.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS13}
+			if err := configureServerClientAuth(server.TLSConfig); err != nil {
+				log.Fatalf("[服务端] mTLS 配置失败: %v", err)
+			}
+			if clientCAFile != "" {
+				log.Printf("[服务端] mTLS 客户端证书认证已启用")
+			}
 			log.Printf("[服务端] WSS 启动 %s%s", u.Host, path)
 			if err := server.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Fatalf("[服务端] WSS 启动失败: %v", err)

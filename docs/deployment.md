@@ -45,6 +45,34 @@ Prefer `wss://` with a real certificate for exposed deployments.
 
 If ECH DNS lookup fails, the client keeps retrying until it can load an ECH config or until you explicitly use `-fallback`.
 
+## mTLS Client Authentication
+
+For stronger client authentication, use `-client-ca` on the WSS server and `-client-cert` / `-client-key` on the client.
+
+Server:
+
+```bash
+./x-tunnel \
+  -l wss://0.0.0.0:443/tunnel \
+  -cert /path/server.pem \
+  -key /path/server-key.pem \
+  -client-ca /path/client-ca.pem \
+  -token "$TOKEN"
+```
+
+Client:
+
+```bash
+./x-tunnel \
+  -l socks5://127.0.0.1:11080 \
+  -f wss://example.com/tunnel \
+  -client-cert /path/client.pem \
+  -client-key /path/client-key.pem \
+  -token "$TOKEN"
+```
+
+`-client-ca` only works on `wss://` server listeners. `-client-cert` and `-client-key` only work with `wss://` client forwards.
+
 ## Recommended Server Baseline
 
 ```bash

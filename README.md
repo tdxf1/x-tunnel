@@ -81,6 +81,24 @@ curl http://127.0.0.1:12000/
 
 See [docs/deployment.md](docs/deployment.md) for token limits, source filtering, target filtering, and TLS/ECH notes.
 
+Require client certificates with mTLS:
+
+```bash
+./x-tunnel \
+  -l wss://0.0.0.0:443/tunnel \
+  -cert /path/server.pem \
+  -key /path/server-key.pem \
+  -client-ca /path/client-ca.pem \
+  -token "$TOKEN"
+
+./x-tunnel \
+  -l socks5://127.0.0.1:11080 \
+  -f wss://example.com/tunnel \
+  -client-cert /path/client.pem \
+  -client-key /path/client-key.pem \
+  -token "$TOKEN"
+```
+
 ## Metrics
 
 Expose lightweight Prometheus-style counters with `-metrics`:

@@ -132,7 +132,7 @@ Verification:
 - QUIC/WebTransport transport option.
 - [x] Metrics endpoint or Prometheus counters.
 - [x] Config file support.
-- mTLS or stronger client authentication.
+- [x] mTLS or stronger client authentication.
 - Benchmark suite and load testing.
 - [x] Windows/Linux/macOS release packaging.
 - [x] CI workflow.
@@ -305,3 +305,16 @@ Post Phase 8 release packaging:
 - Verified release script with `TARGETS=darwin/arm64`, producing `x-tunnel_0.1.0_darwin_arm64`, `SHA256SUMS`, and version output `x-tunnel version=0.1.0 commit=testcommit build=2026-05-16T00:00:00Z`.
 - Verified with `go test ./...`: pass.
 - Verified with `go test -cover ./...`: pass, `coverage: 18.1% of statements`.
+
+Post Phase 8 mTLS:
+
+- Added WSS mTLS support.
+- Server flag: `-client-ca` requires and verifies client certificates against a CA PEM file.
+- Client flags: `-client-cert` and `-client-key` present a client certificate for WSS connections.
+- Added JSON config fields `client_ca`, `client_cert`, and `client_key`.
+- Added startup validation so `-client-ca` only works on WSS server listeners and client cert/key are only used in WSS client mode.
+- Documented mTLS usage in `README.md` and `docs/deployment.md`.
+- Added integration test coverage that generates a temporary CA/client cert, verifies no-cert WSS client failure, then verifies certified WSS client TCP forwarding.
+- Verified `go run . -h` includes `-client-ca`, `-client-cert`, and `-client-key`.
+- Verified with `go test ./...`: pass.
+- Verified with `go test -cover ./...`: pass, `coverage: 19.0% of statements`.

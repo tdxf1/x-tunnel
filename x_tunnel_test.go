@@ -141,13 +141,16 @@ func TestLoadConfigFileAppliesUnsetFlags(t *testing.T) {
 	oldListen, oldForward, oldToken := listenAddr, forwardAddr, token
 	oldMetrics, oldConnectionNum := metricsAddr, connectionNum
 	oldAllow, oldDeny := targetAllowCIDRs, targetDenyCIDRs
+	oldClientCA, oldClientCert, oldClientKey := clientCAFile, clientCertFile, clientKeyFile
 	defer func() {
 		listenAddr, forwardAddr, token = oldListen, oldForward, oldToken
 		metricsAddr, connectionNum = oldMetrics, oldConnectionNum
 		targetAllowCIDRs, targetDenyCIDRs = oldAllow, oldDeny
+		clientCAFile, clientCertFile, clientKeyFile = oldClientCA, oldClientCert, oldClientKey
 	}()
 	listenAddr, forwardAddr, token, metricsAddr = "", "", "", ""
 	targetAllowCIDRs, targetDenyCIDRs = "", ""
+	clientCAFile, clientCertFile, clientKeyFile = "", "", ""
 	connectionNum = 3
 
 	path := filepath.Join(t.TempDir(), "config.json")
@@ -158,6 +161,9 @@ func TestLoadConfigFileAppliesUnsetFlags(t *testing.T) {
 		"metrics": "127.0.0.1:19099",
 		"allow-target": "10.0.0.0/8",
 		"deny_target": "10.0.9.0/24",
+		"client-ca": "ca.pem",
+		"client_cert": "client.pem",
+		"client-key": "client-key.pem",
 		"connections": 2
 	}`
 	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
@@ -184,8 +190,52 @@ func TestLoadConfigFileAppliesUnsetFlags(t *testing.T) {
 	if targetDenyCIDRs != "10.0.9.0/24" {
 		t.Fatalf("targetDenyCIDRs = %q", targetDenyCIDRs)
 	}
+	if clientCAFile != "ca.pem" || clientCertFile != "client.pem" || clientKeyFile != "client-key.pem" {
+		t.Fatalf("client mTLS config = %q %q %q", clientCAFile, clientCertFile, clientKeyFile)
+	}
 	if connectionNum != 2 {
 		t.Fatalf("connectionNum = %d, want 2", connectionNum)
+	}
+}
+
+func TestValidateMTLSConfig(t *testing.T) {
+	oldCert, oldKey := certFile, keyFile
+	oldClientCA, oldClientCert, oldClientKey := clientCAFile, clientCertFile, clientKeyFile
+	defer func() {
+		certFile, keyFile = oldCert, oldKey
+		clientCAFile, clientCertFile, clientKeyFile = oldClientCA, oldClientCert, oldClientKey
+	}()
+
+	certFile, keyFile = "", ""
+	clientCAFile, clientCertFile, clientKeyFile = "ca.pem", "", ""
+	if err := validateMTLSConfig(true, "ws"); err == nil {
+		t.Fatal("validateMTLSConfig allowed client CA on ws server")
+	}
+
+	if err := validateMTLSConfig(true, "wss"); err != nil {
+		t.Fatalf("validateMTLSConfig rejected client CA on wss server: %v", err)
+	}
+
+	clientCAFile = ""
+	certFile, keyFile = "server.pem", "server-key.pem"
+	if err := validateMTLSConfig(false, ""); err == nil {
+		t.Fatal("validateMTLSConfig allowed server cert/key in client mode")
+	}
+
+	certFile, keyFile = "", ""
+	clientCertFile, clientKeyFile = "client.pem", ""
+	if err := validateMTLSConfig(false, ""); err == nil {
+		t.Fatal("validateMTLSConfig allowed incomplete client cert/key pair")
+	}
+
+	clientCertFile, clientKeyFile = "client.pem", "client-key.pem"
+	if err := validateMTLSConfig(false, ""); err != nil {
+		t.Fatalf("validateMTLSConfig rejected complete client cert/key pair: %v", err)
+	}
+
+	clientCAFile = "ca.pem"
+	if err := validateMTLSConfig(false, ""); err == nil {
+		t.Fatal("validateMTLSConfig allowed client CA in client mode")
 	}
 }
 
@@ -216,6 +266,16 @@ func TestLoadConfigFileRejectsDuplicateTargetAliases(t *testing.T) {
 	}
 	if err := loadConfigFile(path, nil); err == nil {
 		t.Fatal("loadConfigFile accepted duplicate allow target aliases")
+	}
+}
+
+func TestLoadConfigFileRejectsDuplicateClientAliases(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"client_ca":"ca.pem","client-ca":"other-ca.pem"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadConfigFile(path, nil); err == nil {
+		t.Fatal("loadConfigFile accepted duplicate client CA aliases")
 	}
 }
 

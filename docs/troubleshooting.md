@@ -64,3 +64,17 @@ Checks:
 - Confirm the server process sees the real client IP.
 - If behind a reverse proxy, enforce source filtering at the proxy or ensure the tunnel process receives the true remote address.
 - Update `-cidr` only after confirming the observed remote address in server logs.
+
+## mTLS Failure
+
+Symptoms:
+
+- Client repeatedly logs TLS or connection failures when connecting to `wss://`.
+- Server has `-client-ca` configured and the client never reaches `协议协商成功`.
+
+Checks:
+
+- Ensure the server listener uses `wss://`; `-client-ca` is rejected on `ws://`.
+- Ensure the client uses `wss://` with both `-client-cert` and `-client-key`.
+- Ensure the client certificate is signed by the CA configured with `-client-ca`.
+- If using a self-signed server certificate for local testing, use `-insecure`; this only disables server certificate verification on the client and does not bypass server-side client certificate verification.
