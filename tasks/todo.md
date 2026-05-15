@@ -745,3 +745,17 @@ Verification:
 - `go test -run 'TestHandleSmuxStreamRejectsUnsupportedProtocolHello|TestHandleSmuxStreamHelloDeadline|Test(NegotiateProtocolHello|ProtocolHello)' -count=1 ./...`: pass.
 - `go test ./...`: pass.
 - `go test -cover ./...`: pass, `coverage: 39.3% of statements`.
+
+Post Phase 8 upstream SOCKS5 auth integration:
+
+- [x] Add a real fake upstream SOCKS5 proxy that requires username/password auth.
+- [x] Verify server `-f socks5://user:pass@proxy` can proxy TCP through that upstream to an origin.
+- [x] Verify wrong upstream SOCKS5 credentials fail as an HTTP 502 through the local client proxy.
+- [x] Run focused/full/coverage verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run TestIntegrationUpstreamSOCKS5Auth -count=1 ./...`: pass.
+- `go test ./...`: pass.
+- `go test -cover ./...`: pass, `coverage: 39.3% of statements`.

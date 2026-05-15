@@ -199,6 +199,84 @@ func TestIntegrationLocalProxyAuth(t *testing.T) {
 	}
 }
 
+func TestIntegrationUpstreamSOCKS5Auth(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	const body = "x-tunnel upstream socks auth payload\n"
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer origin.Close()
+	targetAddr := strings.TrimPrefix(origin.URL, "http://")
+	upstreamAddr := startAuthSOCKS5TCPProxy(t, "upuser", "uppass")
+
+	binPath := filepath.Join(t.TempDir(), "x-tunnel")
+	build := exec.CommandContext(ctx, "go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("go build failed: %v\n%s", err, out)
+	}
+
+	okWSAddr := freeTCPAddr(t)
+	okHTTPProxyAddr := freeTCPAddr(t)
+	okServerLog := filepath.Join(t.TempDir(), "upstream-socks-ok-server.log")
+	okClientLog := filepath.Join(t.TempDir(), "upstream-socks-ok-client.log")
+
+	okServer := startXTunnel(t, ctx, binPath, okServerLog,
+		"-l", "ws://"+okWSAddr+"/tunnel",
+		"-token", "upstream-socks-token",
+		"-cidr", "127.0.0.1/32",
+		"-allow-target", "127.0.0.0/8",
+		"-f", "socks5://upuser:uppass@"+upstreamAddr,
+	)
+	defer stopProcess(okServer)
+	waitTCP(t, ctx, okWSAddr)
+
+	okClient := startXTunnel(t, ctx, binPath, okClientLog,
+		"-l", "http://"+okHTTPProxyAddr,
+		"-f", "ws://"+okWSAddr+"/tunnel",
+		"-token", "upstream-socks-token",
+		"-n", "1",
+	)
+	defer stopProcess(okClient)
+	waitTCP(t, ctx, okHTTPProxyAddr)
+	waitLogContains(t, ctx, okClientLog, "协议协商成功")
+	assertBody(t, "upstream socks auth", fetchViaHTTPProxy(t, okHTTPProxyAddr, "http://"+targetAddr+"/payload"), body)
+
+	badWSAddr := freeTCPAddr(t)
+	badHTTPProxyAddr := freeTCPAddr(t)
+	badServerLog := filepath.Join(t.TempDir(), "upstream-socks-bad-server.log")
+	badClientLog := filepath.Join(t.TempDir(), "upstream-socks-bad-client.log")
+
+	badServer := startXTunnel(t, ctx, binPath, badServerLog,
+		"-l", "ws://"+badWSAddr+"/tunnel",
+		"-token", "upstream-socks-bad-token",
+		"-cidr", "127.0.0.1/32",
+		"-allow-target", "127.0.0.0/8",
+		"-f", "socks5://upuser:wrong@"+upstreamAddr,
+	)
+	defer stopProcess(badServer)
+	waitTCP(t, ctx, badWSAddr)
+
+	badClient := startXTunnel(t, ctx, binPath, badClientLog,
+		"-l", "http://"+badHTTPProxyAddr,
+		"-f", "ws://"+badWSAddr+"/tunnel",
+		"-token", "upstream-socks-bad-token",
+		"-n", "1",
+	)
+	defer stopProcess(badClient)
+	waitTCP(t, ctx, badHTTPProxyAddr)
+	waitLogContains(t, ctx, badClientLog, "协议协商成功")
+	if got := fetchViaHTTPProxyStatus(t, badHTTPProxyAddr, "http://"+targetAddr+"/payload"); got != http.StatusBadGateway {
+		t.Fatalf("HTTP proxy status with bad upstream SOCKS5 auth = %d, want %d", got, http.StatusBadGateway)
+	}
+	waitLogContains(t, ctx, badServerLog, "SOCKS5握手失败")
+}
+
 func TestIntegrationLocalWSSFallback(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -899,6 +977,145 @@ func readSOCKS5ConnectStatus(t *testing.T, r io.Reader) byte {
 		t.Fatalf("read SOCKS5 connect response: %v", err)
 	}
 	return resp[1]
+}
+
+func startAuthSOCKS5TCPProxy(t *testing.T, username, password string) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen auth SOCKS5 proxy: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go handleAuthSOCKS5TCPProxyConn(conn, username, password)
+		}
+	}()
+	return ln.Addr().String()
+}
+
+func handleAuthSOCKS5TCPProxyConn(conn net.Conn, username, password string) {
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(integrationIOTimeout))
+	head := make([]byte, 2)
+	if _, err := io.ReadFull(conn, head); err != nil || head[0] != 0x05 {
+		return
+	}
+	methods := make([]byte, int(head[1]))
+	if _, err := io.ReadFull(conn, methods); err != nil {
+		return
+	}
+	hasUserPass := false
+	for _, method := range methods {
+		if method == 0x02 {
+			hasUserPass = true
+			break
+		}
+	}
+	if !hasUserPass {
+		_, _ = conn.Write([]byte{0x05, 0xff})
+		return
+	}
+	if _, err := conn.Write([]byte{0x05, 0x02}); err != nil {
+		return
+	}
+	if !readSOCKS5UserPassAuth(conn, username, password) {
+		_, _ = conn.Write([]byte{0x01, 0x01})
+		return
+	}
+	if _, err := conn.Write([]byte{0x01, 0x00}); err != nil {
+		return
+	}
+	target, ok := readSOCKS5ConnectTarget(conn)
+	if !ok {
+		return
+	}
+	upstream, err := net.DialTimeout("tcp", target, integrationIOTimeout)
+	if err != nil {
+		_, _ = conn.Write([]byte{0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		return
+	}
+	defer upstream.Close()
+	if _, err := conn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0}); err != nil {
+		return
+	}
+	_ = conn.SetDeadline(time.Time{})
+	done := make(chan struct{}, 2)
+	go func() {
+		_, _ = io.Copy(upstream, conn)
+		_ = upstream.Close()
+		done <- struct{}{}
+	}()
+	go func() {
+		_, _ = io.Copy(conn, upstream)
+		_ = conn.Close()
+		done <- struct{}{}
+	}()
+	<-done
+}
+
+func readSOCKS5UserPassAuth(r io.Reader, username, password string) bool {
+	head := make([]byte, 2)
+	if _, err := io.ReadFull(r, head); err != nil || head[0] != 0x01 {
+		return false
+	}
+	uname := make([]byte, int(head[1]))
+	if _, err := io.ReadFull(r, uname); err != nil {
+		return false
+	}
+	plen := make([]byte, 1)
+	if _, err := io.ReadFull(r, plen); err != nil {
+		return false
+	}
+	pass := make([]byte, int(plen[0]))
+	if _, err := io.ReadFull(r, pass); err != nil {
+		return false
+	}
+	return string(uname) == username && string(pass) == password
+}
+
+func readSOCKS5ConnectTarget(r io.Reader) (string, bool) {
+	head := make([]byte, 4)
+	if _, err := io.ReadFull(r, head); err != nil || head[0] != 0x05 || head[1] != 0x01 {
+		return "", false
+	}
+	var host string
+	switch head[3] {
+	case 0x01:
+		raw := make([]byte, 4)
+		if _, err := io.ReadFull(r, raw); err != nil {
+			return "", false
+		}
+		host = net.IP(raw).String()
+	case 0x03:
+		lenBuf := make([]byte, 1)
+		if _, err := io.ReadFull(r, lenBuf); err != nil {
+			return "", false
+		}
+		raw := make([]byte, int(lenBuf[0]))
+		if _, err := io.ReadFull(r, raw); err != nil {
+			return "", false
+		}
+		host = string(raw)
+	case 0x04:
+		raw := make([]byte, 16)
+		if _, err := io.ReadFull(r, raw); err != nil {
+			return "", false
+		}
+		host = net.IP(raw).String()
+	default:
+		return "", false
+	}
+	portBuf := make([]byte, 2)
+	if _, err := io.ReadFull(r, portBuf); err != nil {
+		return "", false
+	}
+	port := int(portBuf[0])<<8 | int(portBuf[1])
+	return net.JoinHostPort(host, strconv.Itoa(port)), true
 }
 
 func startUDPEcho(t *testing.T) string {
