@@ -879,6 +879,11 @@ func validateStartupConfig() (*startupConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	if clientConfig.ForwardScheme == "wss" && !clientConfig.Fallback {
+		if err := validateECHLookupConfig(echDomain, dnsServer); err != nil {
+			return nil, fmt.Errorf("ECH 查询配置无效: %w", err)
+		}
+	}
 	startup.Client = clientConfig
 	return startup, nil
 }
@@ -1023,6 +1028,37 @@ func parseIPStrategyStrict(s string) (byte, error) {
 	default:
 		return IPStrategyDefault, fmt.Errorf("仅支持空值、4、6、4,6 或 6,4")
 	}
+}
+
+func validateECHLookupConfig(domain, server string) error {
+	if _, err := buildDNSQuery(domain, typeHTTPS); err != nil {
+		return fmt.Errorf("ech 域名无效: %w", err)
+	}
+	server = strings.TrimSpace(server)
+	if server == "" {
+		return fmt.Errorf("dns 服务器不能为空")
+	}
+	if strings.HasPrefix(server, "http://") || strings.HasPrefix(server, "https://") {
+		u, err := url.Parse(server)
+		if err != nil {
+			return fmt.Errorf("dns DoH URL 无效: %w", err)
+		}
+		if u.Host == "" {
+			return fmt.Errorf("dns DoH URL 必须包含 host")
+		}
+		return nil
+	}
+	if strings.Contains(server, "://") {
+		return fmt.Errorf("dns 只支持 http(s) DoH URL 或 UDP host[:port]")
+	}
+	udpAddr := server
+	if !strings.Contains(udpAddr, ":") {
+		udpAddr += ":53"
+	}
+	if err := validateHostPort(udpAddr); err != nil {
+		return fmt.Errorf("dns UDP 地址无效: %w", err)
+	}
+	return nil
 }
 
 func parseTargetPolicy(allowRaw, denyRaw, allowHostRaw, denyHostRaw string) (*TargetPolicy, error) {

@@ -594,3 +594,30 @@ Verification:
 - `go test -run 'Test(ParseIPStrategy|ValidateStartupConfig|ExampleConfigFilesLoad)' -count=1 ./...`: pass.
 - `go test ./...`: pass.
 - `go test -cover ./...`: pass, `coverage: 34.8% of statements`.
+
+Post Phase 8 SOCKS5 and DNS parser fuzz seeds:
+
+- [x] Add fuzz seeds for client SOCKS5 UDP request parsing.
+- [x] Add fuzz seeds for SOCKS5 UDP response parsing.
+- [x] Add fuzz seeds for DNS HTTPS response parsing.
+- [x] Add fuzz seeds for HTTPS record parameter parsing.
+- [x] Run focused/full/coverage verification and commit.
+
+Verification:
+
+- `go test -run 'Fuzz(ParseSOCKS5UDP|ParseDNSResponse|ParseHTTPSRecord)' -count=1 ./...`: pass.
+- `go test ./...`: pass.
+- `go test -cover ./...`: pass, `coverage: 38.2% of statements`.
+
+Post Phase 8 ECH DNS startup validation:
+
+- [x] Validate `-ech` DNS names and `-dns` DoH/UDP endpoints before ECH network lookup.
+- [x] Only require ECH DNS validation for `wss://` clients when fallback is disabled.
+- [x] Add unit coverage for valid and invalid ECH lookup config plus startup rejection.
+- [x] Run focused/full/coverage verification and commit.
+
+Verification:
+
+- `go test -run 'Test(BuildDNSQuery|ValidateECHLookupConfig|ValidateStartupConfig|ExampleConfigFilesLoad)' -count=1 ./...`: pass.
+- `go test ./...`: pass.
+- `go test -cover ./...`: pass, `coverage: 38.2% of statements`.

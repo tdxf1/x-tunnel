@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"io"
 	"net"
 	"net/http"
@@ -446,6 +447,41 @@ func TestBuildDNSQueryValidatesDomain(t *testing.T) {
 	}
 }
 
+func TestValidateECHLookupConfig(t *testing.T) {
+	valid := []struct {
+		domain string
+		server string
+	}{
+		{domain: "cloudflare-ech.com", server: "https://doh.pub/dns-query"},
+		{domain: "example.com.", server: "8.8.8.8"},
+		{domain: "example.com", server: "8.8.8.8:53"},
+		{domain: "example.com", server: "[2001:4860:4860::8888]:53"},
+	}
+	for _, tt := range valid {
+		if err := validateECHLookupConfig(tt.domain, tt.server); err != nil {
+			t.Fatalf("validateECHLookupConfig(%q, %q) returned error: %v", tt.domain, tt.server, err)
+		}
+	}
+
+	invalid := []struct {
+		domain string
+		server string
+	}{
+		{domain: "", server: "https://doh.pub/dns-query"},
+		{domain: "bad host.example", server: "https://doh.pub/dns-query"},
+		{domain: "example.com", server: ""},
+		{domain: "example.com", server: "https:///dns-query"},
+		{domain: "example.com", server: "ftp://dns.example.com"},
+		{domain: "example.com", server: "8.8.8.8:0"},
+		{domain: "example.com", server: "2001:4860:4860::8888"},
+	}
+	for _, tt := range invalid {
+		if err := validateECHLookupConfig(tt.domain, tt.server); err == nil {
+			t.Fatalf("validateECHLookupConfig(%q, %q) accepted invalid config", tt.domain, tt.server)
+		}
+	}
+}
+
 func TestQueryDoHRejectsOversizedResponse(t *testing.T) {
 	oldCfg := cfg
 	defer func() { cfg = oldCfg }()
@@ -829,6 +865,7 @@ func withValidStartupGlobals(t *testing.T) func() {
 	oldMaxClients, oldMaxStreams := maxClientSessions, maxStreamsPerClient
 	oldConnections, oldInsecure, oldFallback := connectionNum, insecure, fallback
 	oldIPS := ips
+	oldDNS, oldECH := dnsServer, echDomain
 
 	cfg = validTestGlobalConfig()
 	listenAddr = "socks5://127.0.0.1:11080"
@@ -843,6 +880,7 @@ func withValidStartupGlobals(t *testing.T) func() {
 	maxClientSessions, maxStreamsPerClient = 0, 0
 	connectionNum, insecure, fallback = 1, false, false
 	ips = ""
+	dnsServer, echDomain = "https://doh.pub/dns-query", "cloudflare-ech.com"
 
 	return func() {
 		cfg = oldCfg
@@ -856,6 +894,7 @@ func withValidStartupGlobals(t *testing.T) func() {
 		maxClientSessions, maxStreamsPerClient = oldMaxClients, oldMaxStreams
 		connectionNum, insecure, fallback = oldConnections, oldInsecure, oldFallback
 		ips = oldIPS
+		dnsServer, echDomain = oldDNS, oldECH
 	}
 }
 
@@ -911,6 +950,16 @@ func TestValidateStartupConfigRejectsCommonErrors(t *testing.T) {
 			listenAddr = "ws://127.0.0.1:18080/tunnel"
 			forwardAddr = ""
 			cidrs = "not-a-cidr"
+		}},
+		{name: "bad ech dns config", setup: func() {
+			forwardAddr = "wss://example.com/tunnel"
+			fallback = false
+			echDomain = "bad host.example"
+		}},
+		{name: "bad dns server config", setup: func() {
+			forwardAddr = "wss://example.com/tunnel"
+			fallback = false
+			dnsServer = "ftp://dns.example.com"
 		}},
 		{name: "client cert on ws", setup: func() {
 			clientCertFile = "client.pem"
@@ -1544,6 +1593,127 @@ func FuzzReadUDPReply(f *testing.F) {
 			t.Fatalf("writeUDPReply after successful read returned error: %v", err)
 		}
 	})
+}
+
+func FuzzParseSOCKS5UDPPacket(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte{0, 0, 1, 1, 1, 2, 3, 4, 0, 53})
+	for _, seed := range []struct {
+		host string
+		port int
+		data []byte
+	}{
+		{host: "1.2.3.4", port: 53, data: []byte("dns")},
+		{host: "example.com", port: 443, data: []byte("payload")},
+		{host: "2001:db8::1", port: 853, data: []byte("v6")},
+	} {
+		packet, err := buildSOCKS5UDPPacket(seed.host, seed.port, seed.data)
+		if err != nil {
+			f.Fatalf("seed SOCKS5 UDP packet: %v", err)
+		}
+		f.Add(packet)
+	}
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		target, payload, err := parseSOCKS5UDPPacket(raw)
+		if err != nil {
+			return
+		}
+		if target == "" {
+			t.Fatal("parseSOCKS5UDPPacket returned empty target")
+		}
+		if len(payload) > len(raw) {
+			t.Fatalf("parseSOCKS5UDPPacket payload length %d exceeds raw length %d", len(payload), len(raw))
+		}
+	})
+}
+
+func FuzzParseSOCKS5UDPResp(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte{0, 0, 0, 9, 0, 53})
+	for _, seed := range []struct {
+		host string
+		port int
+		data []byte
+	}{
+		{host: "1.2.3.4", port: 53, data: []byte("dns")},
+		{host: "example.com", port: 443, data: []byte("payload")},
+		{host: "2001:db8::1", port: 853, data: []byte("v6")},
+	} {
+		packet, err := buildSOCKS5UDPPacket(seed.host, seed.port, seed.data)
+		if err != nil {
+			f.Fatalf("seed SOCKS5 UDP response: %v", err)
+		}
+		f.Add(packet)
+	}
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		addr, payload, err := parseSOCKS5UDPResp(raw)
+		if err != nil {
+			return
+		}
+		if addr == nil {
+			t.Fatal("parseSOCKS5UDPResp returned nil addr")
+		}
+		if len(payload) > len(raw) {
+			t.Fatalf("parseSOCKS5UDPResp payload length %d exceeds raw length %d", len(payload), len(raw))
+		}
+	})
+}
+
+func FuzzParseDNSResponse(f *testing.F) {
+	f.Add([]byte{})
+	f.Add(make([]byte, 12))
+	seed, err := dnsHTTPSResponseSeed([]byte("ech"))
+	if err != nil {
+		f.Fatalf("seed DNS response: %v", err)
+	}
+	f.Add(seed)
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		ech, err := parseDNSResponse(raw)
+		if err != nil {
+			return
+		}
+		if ech != "" {
+			if _, err := base64.StdEncoding.DecodeString(ech); err != nil {
+				t.Fatalf("parseDNSResponse returned invalid base64 ECH: %v", err)
+			}
+		}
+	})
+}
+
+func FuzzParseHTTPSRecord(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte{0, 1, 0})
+	f.Add([]byte{0, 1, 0, 0, 5, 0, 3, 'e', 'c', 'h'})
+	f.Add([]byte{0, 1, 0, 0, 5, 0, 4, 'e', 'c'})
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		ech := parseHTTPSRecord(raw)
+		if ech != "" {
+			if _, err := base64.StdEncoding.DecodeString(ech); err != nil {
+				t.Fatalf("parseHTTPSRecord returned invalid base64 ECH: %v", err)
+			}
+		}
+	})
+}
+
+func dnsHTTPSResponseSeed(ech []byte) ([]byte, error) {
+	query, err := buildDNSQuery("example.com", typeHTTPS)
+	if err != nil {
+		return nil, err
+	}
+	response := append([]byte(nil), query...)
+	response[6], response[7] = 0, 1
+	rdata := []byte{0, 1, 0, 0, 5, byte(len(ech) >> 8), byte(len(ech))}
+	rdata = append(rdata, ech...)
+	answer := []byte{
+		0xC0, 0x0C,
+		byte(typeHTTPS >> 8), byte(typeHTTPS),
+		0, 1,
+		0, 0, 0, 60,
+		byte(len(rdata) >> 8), byte(len(rdata)),
+	}
+	response = append(response, answer...)
+	response = append(response, rdata...)
+	return response, nil
 }
 
 func TestSOCKS5UDPPacketRoundTrip(t *testing.T) {
