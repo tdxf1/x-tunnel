@@ -19,16 +19,16 @@ Improve x-tunnel from a working single-file prototype into a protocol that is ea
 
 ### Phase 1: Protocol Spec and Risk Map, 03:35-05:00
 
-- [ ] Document current wire protocol in `docs/protocol.md`.
-- [ ] Define frame/header formats for stream open, TCP, UDP chunk, UDP reply, and ping.
-- [ ] Record current limits: target length <= 65535, chunk length <= 65535, TLS 1.3, token via WebSocket subprotocol.
-- [ ] Identify backward-compatibility constraints before changing bytes on the wire.
-- [ ] List concrete risks: missing version negotiation, weak error propagation, no automated parser fuzz tests, large single-file maintenance cost, limited graceful shutdown.
+- [x] Document current wire protocol in `docs/protocol.md`.
+- [x] Define frame/header formats for stream open, TCP, UDP chunk, UDP reply, and ping.
+- [x] Record current limits: target length <= 65535, chunk length <= 65535, TLS 1.3, token via WebSocket subprotocol.
+- [x] Identify backward-compatibility constraints before changing bytes on the wire.
+- [x] List concrete risks: missing version negotiation, weak error propagation, no automated parser fuzz tests, large single-file maintenance cost, limited graceful shutdown.
 
 Verification:
 
-- [ ] `go test ./...`
-- [ ] Manual review that spec matches existing parser/writer functions.
+- [x] `go test ./...`
+- [x] Manual review that spec matches existing parser/writer functions.
 
 ### Phase 2: Test Harness First, 05:00-07:00
 
@@ -139,4 +139,9 @@ Verification:
 
 ## Review
 
-Pending. Add exact commands, test outputs, behavior evidence, and known residual risks after implementation.
+Phase 1:
+
+- Added `docs/protocol.md` as the current protocol snapshot and risk map.
+- Verified with `go test ./...`: pass, package reports `[no test files]`.
+
+Pending for later phases: automated unit tests, protocol negotiation, reliability/security changes, integration smoke tests, and final review.
