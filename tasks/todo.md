@@ -32,17 +32,17 @@ Verification:
 
 ### Phase 2: Test Harness First, 05:00-07:00
 
-- [ ] Add unit tests for `parseIPStrategy`.
-- [ ] Add unit tests for SOCKS5 auth/address parsing.
-- [ ] Add round-trip tests for `writeSmuxOpenHeader` and `readSmuxOpenHeader`.
-- [ ] Add round-trip tests for `writeChunk` and `readChunk`.
-- [ ] Add round-trip tests for `writeUDPReply` and `readUDPReply`.
-- [ ] Add round-trip and malformed-input tests for SOCKS5 UDP packet parsing/building.
+- [x] Add unit tests for `parseIPStrategy`.
+- [x] Add unit tests for SOCKS5 auth/address parsing.
+- [x] Add round-trip tests for `writeSmuxOpenHeader` and `readSmuxOpenHeader`.
+- [x] Add round-trip tests for `writeChunk` and `readChunk`.
+- [x] Add round-trip tests for `writeUDPReply` and `readUDPReply`.
+- [x] Add round-trip and malformed-input tests for SOCKS5 UDP packet parsing/building.
 
 Verification:
 
-- [ ] `go test ./...`
-- [ ] Add coverage around protocol parser edge cases.
+- [x] `go test ./...`
+- [x] Add coverage around protocol parser edge cases.
 
 ### Phase 3: Protocol Evolution Foundation, 07:00-09:30
 
@@ -144,4 +144,10 @@ Phase 1:
 - Added `docs/protocol.md` as the current protocol snapshot and risk map.
 - Verified with `go test ./...`: pass, package reports `[no test files]`.
 
-Pending for later phases: automated unit tests, protocol negotiation, reliability/security changes, integration smoke tests, and final review.
+Phase 2:
+
+- Added `x_tunnel_test.go` unit tests for IP strategy parsing, SOCKS5 auth/address parsing, smux open headers, UDP chunks, UDP replies, SOCKS5 UDP packet round-trips, and malformed SOCKS5 UDP inputs.
+- Verified with `go test ./...`: pass.
+- Verified with `go test -cover ./...`: pass, `coverage: 10.0% of statements`.
+
+Pending for later phases: protocol negotiation, reliability/security changes, integration smoke tests, and final review.

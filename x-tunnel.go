@@ -1848,6 +1848,9 @@ func writeUDPReply(w io.Writer, addr string, payload []byte) error {
 	if len(addr) > 65535 {
 		return fmt.Errorf("地址过长")
 	}
+	if len(payload) > 65535 {
+		return fmt.Errorf("数据块过大")
+	}
 	head := make([]byte, 4)
 	binary.BigEndian.PutUint16(head[0:2], uint16(len(addr)))
 	binary.BigEndian.PutUint16(head[2:4], uint16(len(payload)))
@@ -2401,6 +2404,9 @@ func buildSOCKS5UDPPacket(h string, p int, d []byte) ([]byte, error) {
 		buf = append(buf, 0x04)
 		buf = append(buf, ip...)
 	} else {
+		if len(h) > 255 {
+			return nil, fmt.Errorf("域名过长")
+		}
 		buf = append(buf, 0x03, byte(len(h)))
 		buf = append(buf, h...)
 	}
