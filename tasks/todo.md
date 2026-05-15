@@ -251,6 +251,7 @@ Post Phase 8 backlog:
 - Added GitHub Actions CI workflow at `.github/workflows/ci.yml`.
 - CI runs on push and pull request with Go `1.24.4`.
 - CI steps: module download, `go test ./...`, `go test -cover ./...`, and `go build -o x-tunnel .`.
+- CI also smoke-tests `scripts/build.sh` and `scripts/release.sh`.
 - Added `integration_test.go` to automate the local tunnel matrix inside `go test ./...`.
 - Integration test builds a temporary binary and covers WS server, metrics endpoint, SOCKS5 TCP, SOCKS5 UDP relay, TCP forward, HTTP proxy GET, HTTP CONNECT, and wrong-token rejection.
 - Added WSS fallback integration coverage with auto self-signed server cert and client `-insecure`.

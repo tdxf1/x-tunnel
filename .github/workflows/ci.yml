@@ -29,3 +29,13 @@ jobs:
 
       - name: Build
         run: go build -o x-tunnel .
+
+      - name: Build script smoke
+        run: |
+          OUT=/tmp/x-tunnel-ci VERSION=ci COMMIT="${GITHUB_SHA:-local}" BUILD_DATE=ci ./scripts/build.sh
+          /tmp/x-tunnel-ci -version
+
+      - name: Release script smoke
+        run: |
+          TARGETS="linux/amd64" DIST=/tmp/x-tunnel-dist VERSION=ci COMMIT="${GITHUB_SHA:-local}" BUILD_DATE=ci ./scripts/release.sh
+          test -s /tmp/x-tunnel-dist/SHA256SUMS
