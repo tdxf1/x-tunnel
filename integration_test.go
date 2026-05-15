@@ -225,6 +225,58 @@ func TestIntegrationLocalWSSMTLS(t *testing.T) {
 	assertBody(t, "wss mtls tcp forward", fetchHTTP(t, "http://"+tcpAddr+"/payload"), body)
 }
 
+func TestIntegrationMaxClientsRejectsNewClient(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	binPath := filepath.Join(t.TempDir(), "x-tunnel")
+	build := exec.CommandContext(ctx, "go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("go build failed: %v\n%s", err, out)
+	}
+
+	wsAddr := freeTCPAddr(t)
+	firstSocksAddr := freeTCPAddr(t)
+	secondSocksAddr := freeTCPAddr(t)
+	serverLog := filepath.Join(t.TempDir(), "max-clients-server.log")
+	firstClientLog := filepath.Join(t.TempDir(), "max-clients-first.log")
+	secondClientLog := filepath.Join(t.TempDir(), "max-clients-second.log")
+
+	server := startXTunnel(t, ctx, binPath, serverLog,
+		"-l", "ws://"+wsAddr+"/tunnel",
+		"-token", "max-clients-token",
+		"-cidr", "127.0.0.1/32",
+		"-max-clients", "1",
+	)
+	defer stopProcess(server)
+	waitTCP(t, ctx, wsAddr)
+
+	firstClient := startXTunnel(t, ctx, binPath, firstClientLog,
+		"-l", "socks5://"+firstSocksAddr,
+		"-f", "ws://"+wsAddr+"/tunnel",
+		"-token", "max-clients-token",
+		"-n", "1",
+	)
+	defer stopProcess(firstClient)
+	waitTCP(t, ctx, firstSocksAddr)
+	waitLogContains(t, ctx, firstClientLog, "协议协商成功")
+
+	secondClient := startXTunnel(t, ctx, binPath, secondClientLog,
+		"-l", "socks5://"+secondSocksAddr,
+		"-f", "ws://"+wsAddr+"/tunnel",
+		"-token", "max-clients-token",
+		"-n", "1",
+	)
+	defer stopProcess(secondClient)
+	waitTCP(t, ctx, secondSocksAddr)
+	waitLogContains(t, ctx, serverLog, "拒绝客户端会话")
+	waitLogContains(t, ctx, secondClientLog, "协议协商失败")
+}
+
 func startXTunnel(t *testing.T, ctx context.Context, binPath, logPath string, args ...string) *exec.Cmd {
 	t.Helper()
 	logFile, err := os.Create(logPath)

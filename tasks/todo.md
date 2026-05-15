@@ -376,3 +376,28 @@ Post Phase 8 per-client stream limits:
 - Verified with `go test ./...`: pass.
 - Verified with `go test -cover ./...`: pass, `coverage: 26.4% of statements`.
 - Verified real process stream-limit smoke with server `-max-streams 1`: `stream_limit_smoke=pass max_streams=1 blocked_exit=52`; one long-lived CONNECT stream stayed open and the next HTTP proxy request was rejected with server log `拒绝新 stream`.
+
+Post Phase 8 SOCKS5 short-read hardening:
+
+- Replaced ignored `io.ReadFull` results in SOCKS5 CONNECT response draining, local SOCKS5 request parsing, and username/password auth parsing.
+- Added unit coverage for truncated upstream SOCKS5 bound-address responses and short username/password auth requests.
+- Verified focused SOCKS5 tests and the local integration path with `go test -run 'Test(Socks5ConnectRejectsTruncatedBoundAddress|HandleSOCKS5UserPassAuthRejectsShortRequest|LocalTunnelIntegration)' -count=1 ./...`: pass.
+- Verified with `go test ./...`: pass.
+- Verified with `go test -cover ./...`: pass, `coverage: 27.3% of statements`.
+
+Post Phase 8 client session limits:
+
+- [x] Add an optional server-side `-max-clients` limit for active client sessions.
+- [x] Keep default behavior compatible with `0` meaning unlimited.
+- [x] Let existing client sessions open additional WebSocket channels even when the limit is reached.
+- [x] Reject invalid negative config values at startup/config-load time.
+- [x] Add unit coverage, docs, real process smoke, and verification evidence before committing.
+
+Verification:
+
+- `go test -run 'Test(ClientSessionLimitAllowsExistingClient|ClientSessionStreamLimitAccounting|LoadConfigFile|ValidateGlobalConfig)' -count=1 ./...`: pass.
+- `go test -run TestIntegrationMaxClientsRejectsNewClient -count=1 ./...`: pass.
+- `go run . -h` includes `-max-clients` and `-max-streams`.
+- `go test ./...`: pass.
+- `go test -cover ./...`: pass, `coverage: 28.1% of statements`.
+- Real process smoke with server `-max-clients 1`: `client_limit_smoke=pass max_clients=1 rejected_second_client=1`; the first client negotiated successfully and the second client ID was rejected with server log `拒绝客户端会话`.

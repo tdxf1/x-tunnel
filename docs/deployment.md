@@ -43,16 +43,17 @@ Policy order:
 
 ## Resource Limits
 
-Use `-max-streams` on the server to cap active smux streams per client session:
+Use `-max-clients` and `-max-streams` on the server to cap active client sessions and active smux streams per client session:
 
 ```bash
 ./x-tunnel \
   -l ws://0.0.0.0:18080/tunnel \
   -token "$TOKEN" \
+  -max-clients 64 \
   -max-streams 256
 ```
 
-The default `0` preserves legacy behavior and means unlimited. The limit counts all active streams for the same `client_id` across that client's WebSocket channels, including short-lived hello and ping streams. JSON config accepts `max_streams` or `max-streams`.
+The default `0` preserves legacy behavior and means unlimited. `-max-clients` counts active `client_id` sessions; existing sessions may still open additional WebSocket channels. `-max-streams` counts all active streams for the same `client_id` across that client's WebSocket channels, including short-lived hello and ping streams. JSON config accepts `max_clients`/`max-clients` and `max_streams`/`max-streams`.
 
 ## TLS, ECH, and `-insecure`
 
@@ -114,6 +115,7 @@ Client:
   -token "$TOKEN" \
   -cidr 203.0.113.0/24 \
   -allow-target 10.0.0.0/8 \
+  -max-clients 64 \
   -max-streams 256
 ```
 

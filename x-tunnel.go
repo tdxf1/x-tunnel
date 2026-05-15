@@ -147,6 +147,7 @@ var (
 	targetDenyCIDRs     string
 	targetAllowHosts    string
 	targetDenyHosts     string
+	maxClientSessions   int
 	maxStreamsPerClient int
 	connectionNum       int
 	insecure            bool
@@ -221,6 +222,7 @@ func init() {
 	flag.StringVar(&targetDenyCIDRs, "deny-target", "", "服务端拒绝访问的目标 CIDR，多个用逗号分隔")
 	flag.StringVar(&targetAllowHosts, "allow-host", "", "服务端允许访问的目标主机名，多个用逗号分隔，支持 *.example.com")
 	flag.StringVar(&targetDenyHosts, "deny-host", "", "服务端拒绝访问的目标主机名，多个用逗号分隔，支持 *.example.com")
+	flag.IntVar(&maxClientSessions, "max-clients", 0, "服务端允许的最大并发客户端会话数（0 表示不限制）")
 	flag.IntVar(&maxStreamsPerClient, "max-streams", 0, "服务端每个客户端允许的最大并发 smux stream 数（0 表示不限制）")
 	flag.StringVar(&dnsServer, "dns", "https://doh.pub/dns-query", "查询 ECH 公钥所用的 DNS 服务器 (支持 DoH 或 UDP，仅 wss 模式生效)")
 	flag.StringVar(&echDomain, "ech", "cloudflare-ech.com", "用于查询 ECH 公钥的域名（仅 wss 模式生效）")
@@ -267,6 +269,8 @@ type FileConfig struct {
 	DenyTargetFlag     *string `json:"deny-target"`
 	AllowHostFlag      *string `json:"allow-host"`
 	DenyHostFlag       *string `json:"deny-host"`
+	MaxClients         *int    `json:"max_clients"`
+	MaxClientsFlag     *int    `json:"max-clients"`
 	MaxStreams         *int    `json:"max_streams"`
 	MaxStreamsFlag     *int    `json:"max-streams"`
 	DNS                *string `json:"dns"`
@@ -329,6 +333,10 @@ func loadConfigFile(path string, seen map[string]bool) error {
 	if err != nil {
 		return err
 	}
+	maxClients, err := singleIntConfigAlias("max_clients", "max-clients", fc.MaxClients, fc.MaxClientsFlag)
+	if err != nil {
+		return err
+	}
 	maxStreams, err := singleIntConfigAlias("max_streams", "max-streams", fc.MaxStreams, fc.MaxStreamsFlag)
 	if err != nil {
 		return err
@@ -366,6 +374,9 @@ func loadConfigFile(path string, seen map[string]bool) error {
 	applyStringConfig(seen, "ips", fc.IPS, &ips)
 	if fc.Connections != nil && !seen["n"] {
 		connectionNum = *fc.Connections
+	}
+	if err := applyNonNegativeIntConfig(seen, "max-clients", maxClients, &maxClientSessions); err != nil {
+		return err
 	}
 	if err := applyNonNegativeIntConfig(seen, "max-streams", maxStreams, &maxStreamsPerClient); err != nil {
 		return err
@@ -511,6 +522,9 @@ func validateGlobalConfig() error {
 	}
 	if cfg.ReconnectMaxDelay < cfg.ReconnectDelay {
 		return fmt.Errorf("reconnect-max-delay 不能小于 reconnect-delay")
+	}
+	if maxClientSessions < 0 {
+		return fmt.Errorf("max-clients 不能小于 0")
 	}
 	if maxStreamsPerClient < 0 {
 		return fmt.Errorf("max-streams 不能小于 0")
@@ -1296,15 +1310,23 @@ func socks5Connect(conn net.Conn, addr string) error {
 	}
 	switch response[3] {
 	case 0x01:
-		_, _ = io.ReadFull(conn, make([]byte, 6))
+		if _, err := io.ReadFull(conn, make([]byte, 6)); err != nil {
+			return err
+		}
 	case 0x03:
 		lenBuf := make([]byte, 1)
 		if _, err := io.ReadFull(conn, lenBuf); err != nil {
 			return err
 		}
-		_, _ = io.ReadFull(conn, make([]byte, int(lenBuf[0])+2))
+		if _, err := io.ReadFull(conn, make([]byte, int(lenBuf[0])+2)); err != nil {
+			return err
+		}
 	case 0x04:
-		_, _ = io.ReadFull(conn, make([]byte, 18))
+		if _, err := io.ReadFull(conn, make([]byte, 18)); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("地址类型无效: %d", response[3])
 	}
 	return nil
 }
@@ -1904,7 +1926,10 @@ func parseHTTPSRecord(data []byte) string {
 
 // ======================== WebSocket 服务端 ========================
 
-var serverSessions sync.Map // map[string]*ClientSession
+var (
+	serverSessionsMu sync.Mutex
+	serverSessions   sync.Map // map[string]*ClientSession
+)
 
 type WSChannel struct {
 	id      uint64
@@ -1922,23 +1947,35 @@ type ClientSession struct {
 	activeStreams int
 }
 
-func getOrCreateClientSession(clientID string) *ClientSession {
+func getOrCreateClientSession(clientID string) (*ClientSession, bool) {
+	serverSessionsMu.Lock()
+	defer serverSessionsMu.Unlock()
 	if v, ok := serverSessions.Load(clientID); ok {
 		if cs, okType := v.(*ClientSession); okType && cs != nil {
-			return cs
+			return cs, true
 		}
 		serverSessions.Delete(clientID)
+	}
+	if maxClientSessions > 0 && serverSessionCount() >= maxClientSessions {
+		return nil, false
 	}
 	s := &ClientSession{
 		clientID: clientID,
 		channels: make(map[uint64]*WSChannel),
 	}
-	actual, _ := serverSessions.LoadOrStore(clientID, s)
-	if cs, ok := actual.(*ClientSession); ok && cs != nil {
-		return cs
-	}
 	serverSessions.Store(clientID, s)
-	return s
+	return s, true
+}
+
+func serverSessionCount() int {
+	count := 0
+	serverSessions.Range(func(_, value any) bool {
+		if cs, ok := value.(*ClientSession); ok && cs != nil {
+			count++
+		}
+		return true
+	})
+	return count
 }
 
 func (s *ClientSession) addChannel(wsConn *websocket.Conn, preferredID uint64) *WSChannel {
@@ -1974,7 +2011,11 @@ func (s *ClientSession) removeChannel(id uint64, current *WSChannel) {
 
 	if empty {
 		log.Printf("[服务端] 客户端会话 %s 断开", s.clientID)
-		serverSessions.Delete(s.clientID)
+		serverSessionsMu.Lock()
+		if current, ok := serverSessions.Load(s.clientID); ok && current == s {
+			serverSessions.Delete(s.clientID)
+		}
+		serverSessionsMu.Unlock()
 	}
 }
 
@@ -2099,7 +2140,13 @@ func runWebSocketServer(ctx context.Context, addr string) {
 				channelID = parsed
 			}
 		}
-		session := getOrCreateClientSession(cid)
+		session, ok := getOrCreateClientSession(cid)
+		if !ok {
+			log.Printf("[服务端] 拒绝客户端会话: client_id=%s max-clients=%d", shortID(cid), maxClientSessions)
+			_ = wsConn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseTryAgainLater, "max clients reached"), time.Now().Add(time.Second))
+			_ = wsConn.Close()
+			return
+		}
 		ch := session.addChannel(wsConn, channelID)
 		log.Printf("[服务端] 客户端通道 %d 连接, 客户端ID: %s, IP: %s", ch.id, cid, clientIP)
 		go handleWebSocketChannel(ch)
@@ -3041,7 +3088,9 @@ func handleSOCKS5(c net.Conn, cfgp *ProxyConfig) {
 		return
 	}
 	methods := make([]byte, buf[1])
-	_, _ = io.ReadFull(c, methods)
+	if _, err := io.ReadFull(c, methods); err != nil {
+		return
+	}
 	if cfgp.Username != "" {
 		_, _ = c.Write([]byte{0x05, 0x02})
 		if err := handleSOCKS5UserPassAuth(c, cfgp); err != nil {
@@ -3059,21 +3108,33 @@ func handleSOCKS5(c net.Conn, cfgp *ProxyConfig) {
 	switch head[3] {
 	case 0x01:
 		b := make([]byte, 4)
-		_, _ = io.ReadFull(c, b)
+		if _, err := io.ReadFull(c, b); err != nil {
+			return
+		}
 		target = net.IP(b).String()
 	case 0x03:
 		b := make([]byte, 1)
-		_, _ = io.ReadFull(c, b)
+		if _, err := io.ReadFull(c, b); err != nil {
+			return
+		}
 		addr := make([]byte, b[0])
-		_, _ = io.ReadFull(c, addr)
+		if _, err := io.ReadFull(c, addr); err != nil {
+			return
+		}
 		target = string(addr)
 	case 0x04:
 		b := make([]byte, 16)
-		_, _ = io.ReadFull(c, b)
+		if _, err := io.ReadFull(c, b); err != nil {
+			return
+		}
 		target = net.IP(b).String()
+	default:
+		return
 	}
 	pb := make([]byte, 2)
-	_, _ = io.ReadFull(c, pb)
+	if _, err := io.ReadFull(c, pb); err != nil {
+		return
+	}
 	port := int(pb[0])<<8 | int(pb[1])
 	target = net.JoinHostPort(target, fmt.Sprintf("%d", port))
 
@@ -3108,12 +3169,20 @@ func handleSOCKS5(c net.Conn, cfgp *ProxyConfig) {
 
 func handleSOCKS5UserPassAuth(c net.Conn, cfgp *ProxyConfig) error {
 	b := make([]byte, 2)
-	_, _ = io.ReadFull(c, b)
+	if _, err := io.ReadFull(c, b); err != nil {
+		return err
+	}
 	u := make([]byte, b[1])
-	_, _ = io.ReadFull(c, u)
-	_, _ = io.ReadFull(c, b[:1])
+	if _, err := io.ReadFull(c, u); err != nil {
+		return err
+	}
+	if _, err := io.ReadFull(c, b[:1]); err != nil {
+		return err
+	}
 	p := make([]byte, b[0])
-	_, _ = io.ReadFull(c, p)
+	if _, err := io.ReadFull(c, p); err != nil {
+		return err
+	}
 	if string(u) == cfgp.Username && string(p) == cfgp.Password {
 		_, _ = c.Write([]byte{0x01, 0x00})
 		return nil

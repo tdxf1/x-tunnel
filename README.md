@@ -78,6 +78,7 @@ curl http://127.0.0.1:12000/
   -allow-target 10.0.0.0/8 \
   -deny-target 10.0.9.0/24 \
   -allow-host api.internal.example.com \
+  -max-clients 64 \
   -max-streams 256
 ```
 
@@ -125,6 +126,7 @@ hyphen or underscore forms, for example `allow-target` or `allow_target`.
   "deny_target": "10.0.9.0/24",
   "allow-host": "api.internal.example.com,*.svc.example.com",
   "connections": 1,
+  "max_clients": 64,
   "max_streams": 128,
   "dial_timeout": "5s",
   "reconnect_max_delay": "30s",
@@ -146,6 +148,7 @@ uses underscore keys, for example `"dial_timeout": "5s"`.
 - `DNS 查询失败` or `未找到 ECH 参数`: the configured `-dns` resolver could not return HTTPS/ECH records for `-ech`. Use `-fallback` only when standard TLS without ECH is acceptable.
 - `无可用 smux 通道`: the local listener accepted a connection before any WebSocket/smux channel was ready, or every channel is reconnecting.
 - `TCP 拒绝` or `UDP 拒绝`: the target was blocked by `-allow-target`, `-deny-target`, `-allow-host`, or `-deny-host`.
+- `拒绝客户端会话`: the server-side `-max-clients` limit is already reached for new client IDs.
 - `拒绝新 stream`: the server-side `-max-streams` limit for that client session is already reached.
 - `ws 模式已忽略 insecure 参数`: `-insecure` only applies to `wss://`.
 

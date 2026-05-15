@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -143,6 +144,7 @@ func TestLoadConfigFileAppliesUnsetFlags(t *testing.T) {
 	oldCfg := cfg
 	oldListen, oldForward, oldToken := listenAddr, forwardAddr, token
 	oldMetrics, oldConnectionNum := metricsAddr, connectionNum
+	oldMaxClients := maxClientSessions
 	oldMaxStreams := maxStreamsPerClient
 	oldAllow, oldDeny := targetAllowCIDRs, targetDenyCIDRs
 	oldAllowHosts, oldDenyHosts := targetAllowHosts, targetDenyHosts
@@ -151,6 +153,7 @@ func TestLoadConfigFileAppliesUnsetFlags(t *testing.T) {
 		cfg = oldCfg
 		listenAddr, forwardAddr, token = oldListen, oldForward, oldToken
 		metricsAddr, connectionNum = oldMetrics, oldConnectionNum
+		maxClientSessions = oldMaxClients
 		maxStreamsPerClient = oldMaxStreams
 		targetAllowCIDRs, targetDenyCIDRs = oldAllow, oldDeny
 		targetAllowHosts, targetDenyHosts = oldAllowHosts, oldDenyHosts
@@ -163,6 +166,7 @@ func TestLoadConfigFileAppliesUnsetFlags(t *testing.T) {
 	cfg.DialTimeout = 3 * time.Second
 	cfg.ReconnectJitter = 500 * time.Millisecond
 	connectionNum = 3
+	maxClientSessions = 0
 	maxStreamsPerClient = 0
 
 	path := filepath.Join(t.TempDir(), "config.json")
@@ -181,6 +185,7 @@ func TestLoadConfigFileAppliesUnsetFlags(t *testing.T) {
 		"dial_timeout": "250ms",
 		"reconnect_jitter": "0s",
 		"connections": 2,
+		"max-clients": 4,
 		"max-streams": 8
 	}`
 	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
@@ -228,6 +233,9 @@ func TestLoadConfigFileAppliesUnsetFlags(t *testing.T) {
 	if maxStreamsPerClient != 8 {
 		t.Fatalf("maxStreamsPerClient = %d, want 8", maxStreamsPerClient)
 	}
+	if maxClientSessions != 4 {
+		t.Fatalf("maxClientSessions = %d, want 4", maxClientSessions)
+	}
 }
 
 func TestLoadConfigFileRejectsInvalidDuration(t *testing.T) {
@@ -260,11 +268,23 @@ func TestLoadConfigFileRejectsNegativeMaxStreams(t *testing.T) {
 	}
 }
 
+func TestLoadConfigFileRejectsNegativeMaxClients(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"max_clients":-1}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadConfigFile(path, nil); err == nil {
+		t.Fatal("loadConfigFile accepted negative max client limit")
+	}
+}
+
 func TestValidateGlobalConfig(t *testing.T) {
 	oldCfg := cfg
+	oldMaxClients := maxClientSessions
 	oldMaxStreams := maxStreamsPerClient
 	defer func() {
 		cfg = oldCfg
+		maxClientSessions = oldMaxClients
 		maxStreamsPerClient = oldMaxStreams
 	}()
 	cfg = GlobalConfig{
@@ -280,10 +300,16 @@ func TestValidateGlobalConfig(t *testing.T) {
 		ShutdownTimeout:    time.Second,
 		ReadBuf:            64 * 1024,
 	}
+	maxClientSessions = 0
 	maxStreamsPerClient = 0
 	if err := validateGlobalConfig(); err != nil {
 		t.Fatalf("validateGlobalConfig rejected zero jitter: %v", err)
 	}
+	maxClientSessions = -1
+	if err := validateGlobalConfig(); err == nil {
+		t.Fatal("validateGlobalConfig accepted negative client limit")
+	}
+	maxClientSessions = 0
 	maxStreamsPerClient = -1
 	if err := validateGlobalConfig(); err == nil {
 		t.Fatal("validateGlobalConfig accepted negative max stream limit")
@@ -389,6 +415,46 @@ func TestClientSessionStreamLimitAccounting(t *testing.T) {
 	}
 }
 
+func TestClientSessionLimitAllowsExistingClient(t *testing.T) {
+	oldMaxClients := maxClientSessions
+	defer func() {
+		maxClientSessions = oldMaxClients
+		serverSessionsMu.Lock()
+		serverSessions.Range(func(key, _ any) bool {
+			serverSessions.Delete(key)
+			return true
+		})
+		serverSessionsMu.Unlock()
+	}()
+	serverSessionsMu.Lock()
+	serverSessions.Range(func(key, _ any) bool {
+		serverSessions.Delete(key)
+		return true
+	})
+	serverSessionsMu.Unlock()
+
+	maxClientSessions = 1
+	first, ok := getOrCreateClientSession("client-a")
+	if !ok || first == nil {
+		t.Fatalf("first client session = %v ok %v, want non-nil ok true", first, ok)
+	}
+	again, ok := getOrCreateClientSession("client-a")
+	if !ok || again != first {
+		t.Fatalf("existing client session = %v ok %v, want original ok true", again, ok)
+	}
+	if second, ok := getOrCreateClientSession("client-b"); ok || second != nil {
+		t.Fatalf("second client session = %v ok %v, want nil ok false", second, ok)
+	}
+
+	serverSessionsMu.Lock()
+	serverSessions.Delete("client-a")
+	serverSessionsMu.Unlock()
+	second, ok := getOrCreateClientSession("client-b")
+	if !ok || second == nil {
+		t.Fatalf("second client after release = %v ok %v, want non-nil ok true", second, ok)
+	}
+}
+
 func TestValidateMTLSConfig(t *testing.T) {
 	oldCert, oldKey := certFile, keyFile
 	oldClientCA, oldClientCert, oldClientKey := clientCAFile, clientCertFile, clientKeyFile
@@ -477,6 +543,16 @@ func TestLoadConfigFileRejectsDuplicateMaxStreamAliases(t *testing.T) {
 	}
 	if err := loadConfigFile(path, nil); err == nil {
 		t.Fatal("loadConfigFile accepted duplicate max stream aliases")
+	}
+}
+
+func TestLoadConfigFileRejectsDuplicateMaxClientAliases(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"max_clients":8,"max-clients":16}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadConfigFile(path, nil); err == nil {
+		t.Fatal("loadConfigFile accepted duplicate max client aliases")
 	}
 }
 
@@ -694,6 +770,44 @@ func TestParseSOCKS5Addr(t *testing.T) {
 				t.Fatalf("parseSOCKS5Addr(%q) = %#v, want host=%q username=%q password=%q", tt.in, got, tt.host, tt.username, tt.password)
 			}
 		})
+	}
+}
+
+func TestSocks5ConnectRejectsTruncatedBoundAddress(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+	_ = server.SetDeadline(time.Now().Add(time.Second))
+	_ = client.SetDeadline(time.Now().Add(time.Second))
+
+	go func() {
+		req := make([]byte, 10)
+		_, _ = io.ReadFull(server, req)
+		_, _ = server.Write([]byte{0x05, 0x00, 0x00, 0x01, 127, 0})
+		_ = server.Close()
+	}()
+
+	if err := socks5Connect(client, "127.0.0.1:80"); err == nil {
+		t.Fatal("socks5Connect accepted truncated bound IPv4 response")
+	}
+}
+
+func TestHandleSOCKS5UserPassAuthRejectsShortRequest(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+	_ = server.SetDeadline(time.Now().Add(time.Second))
+	_ = client.SetDeadline(time.Now().Add(time.Second))
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- handleSOCKS5UserPassAuth(server, &ProxyConfig{Username: "user", Password: "pass"})
+	}()
+
+	_, _ = client.Write([]byte{0x01, 0x04, 'u'})
+	_ = client.Close()
+	if err := <-errCh; err == nil {
+		t.Fatal("handleSOCKS5UserPassAuth accepted short auth request")
 	}
 }
 
