@@ -111,6 +111,8 @@ Expose lightweight Prometheus-style counters with `-metrics`:
 curl http://127.0.0.1:9090/metrics
 ```
 
+Metrics include session/stream counters plus rejection counters for source CIDR, token auth, client limits, stream limits, and target policy.
+
 ## Config File
 
 Use `-config` with JSON when command lines get long. Explicit flags override config file values.

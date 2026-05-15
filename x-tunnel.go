@@ -170,9 +170,14 @@ var (
 	targetPolicy *TargetPolicy
 	ipStrategy   byte
 
-	serverStreamSeq    uint64
-	udpAssociationSeq  uint64
-	clientReconnectSeq uint64
+	serverStreamSeq       uint64
+	udpAssociationSeq     uint64
+	clientReconnectSeq    uint64
+	serverSourceRejectSeq uint64
+	serverAuthRejectSeq   uint64
+	serverClientRejectSeq uint64
+	serverStreamRejectSeq uint64
+	serverTargetRejectSeq uint64
 )
 
 var (
@@ -2116,11 +2121,13 @@ func runWebSocketServer(ctx context.Context, addr string) {
 			}
 		}
 		if !allowed {
+			atomic.AddUint64(&serverSourceRejectSeq, 1)
 			http.Error(w, "禁止访问", http.StatusForbidden)
 			return
 		}
 		if token != "" {
 			if r.Header.Get("Sec-WebSocket-Protocol") != token {
+				atomic.AddUint64(&serverAuthRejectSeq, 1)
 				log.Printf("[服务端] Token 认证失败，来源 IP: %s", clientIP)
 				http.Error(w, "未授权", http.StatusUnauthorized)
 				return
@@ -2142,6 +2149,7 @@ func runWebSocketServer(ctx context.Context, addr string) {
 		}
 		session, ok := getOrCreateClientSession(cid)
 		if !ok {
+			atomic.AddUint64(&serverClientRejectSeq, 1)
 			log.Printf("[服务端] 拒绝客户端会话: client_id=%s max-clients=%d", shortID(cid), maxClientSessions)
 			_ = wsConn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseTryAgainLater, "max clients reached"), time.Now().Add(time.Second))
 			_ = wsConn.Close()
@@ -2223,6 +2231,16 @@ func writeMetrics(w io.Writer) {
 	fmt.Fprintf(w, "x_tunnel_udp_associations_total %d\n", atomic.LoadUint64(&udpAssociationSeq))
 	fmt.Fprintf(w, "# TYPE x_tunnel_client_reconnects_total counter\n")
 	fmt.Fprintf(w, "x_tunnel_client_reconnects_total %d\n", atomic.LoadUint64(&clientReconnectSeq))
+	fmt.Fprintf(w, "# TYPE x_tunnel_server_source_rejections_total counter\n")
+	fmt.Fprintf(w, "x_tunnel_server_source_rejections_total %d\n", atomic.LoadUint64(&serverSourceRejectSeq))
+	fmt.Fprintf(w, "# TYPE x_tunnel_server_auth_rejections_total counter\n")
+	fmt.Fprintf(w, "x_tunnel_server_auth_rejections_total %d\n", atomic.LoadUint64(&serverAuthRejectSeq))
+	fmt.Fprintf(w, "# TYPE x_tunnel_server_client_session_rejections_total counter\n")
+	fmt.Fprintf(w, "x_tunnel_server_client_session_rejections_total %d\n", atomic.LoadUint64(&serverClientRejectSeq))
+	fmt.Fprintf(w, "# TYPE x_tunnel_server_stream_rejections_total counter\n")
+	fmt.Fprintf(w, "x_tunnel_server_stream_rejections_total %d\n", atomic.LoadUint64(&serverStreamRejectSeq))
+	fmt.Fprintf(w, "# TYPE x_tunnel_server_target_rejections_total counter\n")
+	fmt.Fprintf(w, "x_tunnel_server_target_rejections_total %d\n", atomic.LoadUint64(&serverTargetRejectSeq))
 	fmt.Fprintf(w, "# TYPE x_tunnel_server_sessions gauge\n")
 	fmt.Fprintf(w, "x_tunnel_server_sessions %d\n", countServerSessions())
 }
@@ -2397,6 +2415,7 @@ func handleWebSocketChannel(ch *WSChannel) {
 			return
 		}
 		if active, ok := session.tryAcquireStream(); !ok {
+			atomic.AddUint64(&serverStreamRejectSeq, 1)
 			log.Printf("[服务端] 客户ID:%s 通道:%d 拒绝新 stream: active=%d max-streams=%d", shortID(session.clientID), ch.id, active, maxStreamsPerClient)
 			_ = stream.Close()
 			continue
@@ -2442,6 +2461,7 @@ func handleSmuxStream(session *ClientSession, ch *WSChannel, stream *smux.Stream
 	case streamKindTCP:
 		log.Printf("[服务端] 客户ID:%s TCP 打开: %s, 通道:%d", shortID(session.clientID), target, ch.id)
 		if err := ensureTargetAllowed(target); err != nil {
+			atomic.AddUint64(&serverTargetRejectSeq, 1)
 			log.Printf("[服务端] 客户ID:%s TCP 拒绝: %s, reason=%v, 通道:%d", shortID(session.clientID), target, err, ch.id)
 			return
 		}
@@ -2460,6 +2480,7 @@ func handleSmuxStream(session *ClientSession, ch *WSChannel, stream *smux.Stream
 	case streamKindUDP:
 		log.Printf("[服务端] 客户ID:%s SOCKS5 UDP 访问: %s, 通道:%d", shortID(session.clientID), target, ch.id)
 		if err := ensureTargetAllowed(target); err != nil {
+			atomic.AddUint64(&serverTargetRejectSeq, 1)
 			log.Printf("[服务端] 客户ID:%s UDP 拒绝: %s, reason=%v, 通道:%d", shortID(session.clientID), target, err, ch.id)
 			return
 		}

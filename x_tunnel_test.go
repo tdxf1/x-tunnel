@@ -114,15 +114,30 @@ func TestWriteMetrics(t *testing.T) {
 	oldStreams := atomic.LoadUint64(&serverStreamSeq)
 	oldUDP := atomic.LoadUint64(&udpAssociationSeq)
 	oldReconnects := atomic.LoadUint64(&clientReconnectSeq)
+	oldSourceRejects := atomic.LoadUint64(&serverSourceRejectSeq)
+	oldAuthRejects := atomic.LoadUint64(&serverAuthRejectSeq)
+	oldClientRejects := atomic.LoadUint64(&serverClientRejectSeq)
+	oldStreamRejects := atomic.LoadUint64(&serverStreamRejectSeq)
+	oldTargetRejects := atomic.LoadUint64(&serverTargetRejectSeq)
 	defer func() {
 		atomic.StoreUint64(&serverStreamSeq, oldStreams)
 		atomic.StoreUint64(&udpAssociationSeq, oldUDP)
 		atomic.StoreUint64(&clientReconnectSeq, oldReconnects)
+		atomic.StoreUint64(&serverSourceRejectSeq, oldSourceRejects)
+		atomic.StoreUint64(&serverAuthRejectSeq, oldAuthRejects)
+		atomic.StoreUint64(&serverClientRejectSeq, oldClientRejects)
+		atomic.StoreUint64(&serverStreamRejectSeq, oldStreamRejects)
+		atomic.StoreUint64(&serverTargetRejectSeq, oldTargetRejects)
 		serverSessions.Delete("metrics-test")
 	}()
 	atomic.StoreUint64(&serverStreamSeq, 7)
 	atomic.StoreUint64(&udpAssociationSeq, 3)
 	atomic.StoreUint64(&clientReconnectSeq, 2)
+	atomic.StoreUint64(&serverSourceRejectSeq, 11)
+	atomic.StoreUint64(&serverAuthRejectSeq, 13)
+	atomic.StoreUint64(&serverClientRejectSeq, 17)
+	atomic.StoreUint64(&serverStreamRejectSeq, 19)
+	atomic.StoreUint64(&serverTargetRejectSeq, 23)
 	serverSessions.Store("metrics-test", &ClientSession{clientID: "metrics-test"})
 
 	var buf bytes.Buffer
@@ -132,6 +147,11 @@ func TestWriteMetrics(t *testing.T) {
 		"x_tunnel_server_streams_total 7",
 		"x_tunnel_udp_associations_total 3",
 		"x_tunnel_client_reconnects_total 2",
+		"x_tunnel_server_source_rejections_total 11",
+		"x_tunnel_server_auth_rejections_total 13",
+		"x_tunnel_server_client_session_rejections_total 17",
+		"x_tunnel_server_stream_rejections_total 19",
+		"x_tunnel_server_target_rejections_total 23",
 		"x_tunnel_server_sessions",
 	} {
 		if !strings.Contains(got, want) {

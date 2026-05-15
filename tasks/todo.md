@@ -401,3 +401,16 @@ Verification:
 - `go test ./...`: pass.
 - `go test -cover ./...`: pass, `coverage: 28.1% of statements`.
 - Real process smoke with server `-max-clients 1`: `client_limit_smoke=pass max_clients=1 rejected_second_client=1`; the first client negotiated successfully and the second client ID was rejected with server log `拒绝客户端会话`.
+
+Post Phase 8 rejection metrics:
+
+- [x] Add metrics counters for source CIDR, token auth, client-session limit, stream limit, and target-policy rejections.
+- [x] Increment counters on the same paths that currently emit rejection logs or HTTP errors.
+- [x] Extend metrics unit coverage and docs.
+- [x] Run focused metrics tests, full tests, coverage, and commit.
+
+Verification:
+
+- `go test -run TestWriteMetrics -count=1 ./...`: pass.
+- `go test ./...`: pass.
+- `go test -cover ./...`: pass, `coverage: 28.4% of statements`.

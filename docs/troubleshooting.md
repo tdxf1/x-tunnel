@@ -12,6 +12,7 @@ Checks:
 - Ensure client and server use the same `-token`.
 - Ensure the token has no spaces, commas, slashes, quotes, non-ASCII characters, or shell-expanded characters.
 - Re-run `x-tunnel -version` to confirm both sides are the expected build.
+- If `-metrics` is enabled, check `x_tunnel_server_auth_rejections_total`.
 
 ## No Available smux Channel
 
@@ -52,6 +53,7 @@ Checks:
 - Review server `-allow-target`, `-deny-target`, `-allow-host`, and `-deny-host`.
 - `-deny-target` wins before `-allow-target` for IP targets; `-deny-host` wins before `-allow-host` for domain targets.
 - Domain targets are rejected when CIDR allow rules exist without a matching `-allow-host`.
+- If `-metrics` is enabled, check `x_tunnel_server_target_rejections_total`.
 
 ## Source CIDR Rejection
 
@@ -64,6 +66,7 @@ Checks:
 - Confirm the server process sees the real client IP.
 - If behind a reverse proxy, enforce source filtering at the proxy or ensure the tunnel process receives the true remote address.
 - Update `-cidr` only after confirming the observed remote address in server logs.
+- If `-metrics` is enabled, check `x_tunnel_server_source_rejections_total`.
 
 ## Client or Stream Limit Rejection
 
@@ -79,6 +82,7 @@ Checks:
 - Review server `-max-streams`; `0` means unlimited.
 - Raise the limit if expected concurrency is higher than the configured cap.
 - Check whether many clients, WebSocket channels, or long-lived TCP/UDP streams are stuck open.
+- If `-metrics` is enabled, check `x_tunnel_server_client_rejections_total` and `x_tunnel_server_stream_rejections_total`.
 
 ## mTLS Failure
 
