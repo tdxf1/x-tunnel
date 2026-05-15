@@ -137,6 +137,7 @@ Verification:
 - Windows/Linux/macOS release packaging.
 - [x] CI workflow.
 - [x] Automated local integration test.
+- [x] Release build metadata script.
 
 ## Review
 
@@ -240,7 +241,7 @@ Phase 8:
 Remaining risks/backlog:
 
 - Add CI so `go test ./...` runs automatically on push/PR.
-- Add automated integration tests instead of shell-only smoke scripts.
+- Expand automated integration tests to cover UDP relay and WSS/fallback modes.
 - Add release build metadata defaults in a documented build script.
 - Consider mTLS or signed client auth beyond bearer-token subprotocol auth.
 
@@ -249,6 +250,14 @@ Post Phase 8 backlog:
 - Added GitHub Actions CI workflow at `.github/workflows/ci.yml`.
 - CI runs on push and pull request with Go `1.24.4`.
 - CI steps: module download, `go test ./...`, `go test -cover ./...`, and `go build -o x-tunnel .`.
+- Added `integration_test.go` to automate the local tunnel matrix inside `go test ./...`.
+- Integration test builds a temporary binary and covers WS server, SOCKS5, TCP forward, HTTP proxy GET, HTTP CONNECT, and wrong-token rejection.
+- Verified with `go test ./...`: pass.
+- Verified with `go test -cover ./...`: pass, `coverage: 15.7% of statements`.
 - Added `integration_test.go`, which builds a temporary x-tunnel binary, starts a real local WS server/client pair, and verifies TCP forward plus HTTP proxy traffic against an `httptest` server.
 - Verified with `go test ./...`: pass, including integration test.
 - Verified with `go test -cover ./...`: pass, `coverage: 15.7% of statements`.
+- Added `scripts/build.sh` to inject `buildVersion`, `buildCommit`, and `buildDate` via `-ldflags`.
+- Documented the build script in `README.md`.
+- Verified build script with `OUT=/tmp/x-tunnel-build-check VERSION=0.1.0 COMMIT=testcommit BUILD_DATE=2026-05-16T00:00:00Z ./scripts/build.sh`.
+- Verified generated binary output: `x-tunnel version=0.1.0 commit=testcommit build=2026-05-16T00:00:00Z`.

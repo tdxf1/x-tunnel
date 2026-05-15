@@ -19,6 +19,13 @@ go build -ldflags "\
   -o x-tunnel .
 ```
 
+Or use the build script:
+
+```bash
+VERSION=0.1.0 OUT=./x-tunnel ./scripts/build.sh
+./x-tunnel -version
+```
+
 ## Local WS Example
 
 Server:
