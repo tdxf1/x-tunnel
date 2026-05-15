@@ -647,3 +647,16 @@ Verification:
 - `go test -run TestLocalTunnelIntegration -count=1 ./...`: pass.
 - `go test ./...`: pass.
 - `go test -cover ./...`: pass, `coverage: 38.4% of statements`.
+
+Post Phase 8 upstream SOCKS5 auth validation:
+
+- [x] Require upstream SOCKS5 proxy auth to use complete `user:pass@host:port` syntax.
+- [x] Reject missing password, empty username/password, and empty proxy host during server startup validation.
+- [x] Add unit coverage for parser and server startup validation.
+- [x] Run focused/full/coverage verification and commit.
+
+Verification:
+
+- `go test -run 'Test(ParseSOCKS5Addr|ValidateServerStartupConfig|ValidateStartupConfig|ExampleConfigFilesLoad)' -count=1 ./...`: pass.
+- `go test ./...`: pass.
+- `go test -cover ./...`: pass, `coverage: 38.5% of statements`.

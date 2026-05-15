@@ -933,6 +933,9 @@ func TestValidateServerStartupConfig(t *testing.T) {
 	if _, _, err := validateServerStartupConfig("socks5://127.0.0.1", "", "", "", ""); err == nil {
 		t.Fatal("validateServerStartupConfig accepted SOCKS5 proxy without port")
 	}
+	if _, _, err := validateServerStartupConfig("socks5://user@127.0.0.1:1080", "", "", "", ""); err == nil {
+		t.Fatal("validateServerStartupConfig accepted incomplete SOCKS5 auth")
+	}
 }
 
 func TestValidateStartupConfigValidModes(t *testing.T) {
@@ -1161,6 +1164,20 @@ func TestParseSOCKS5Addr(t *testing.T) {
 				t.Fatalf("parseSOCKS5Addr(%q) = %#v, want host=%q username=%q password=%q", tt.in, got, tt.host, tt.username, tt.password)
 			}
 		})
+	}
+}
+
+func TestParseSOCKS5AddrRejectsIncompleteAuth(t *testing.T) {
+	for _, in := range []string{
+		"socks5://user@127.0.0.1:1080",
+		"socks5://user:@127.0.0.1:1080",
+		"socks5://:pass@127.0.0.1:1080",
+		"socks5://user:pass@",
+		"user@example.com:1080",
+	} {
+		if _, err := parseSOCKS5Addr(in); err == nil {
+			t.Fatalf("parseSOCKS5Addr(%q) accepted incomplete auth", in)
+		}
 	}
 }
 

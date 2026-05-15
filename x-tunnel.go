@@ -1386,18 +1386,19 @@ func parseSOCKS5Addr(addr string) (*SOCKS5Config, error) {
 
 	if strings.Contains(addr, "@") {
 		parts := strings.SplitN(addr, "@", 2)
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("无效的SOCKS5地址格式")
-		}
 		auth := parts[0]
-		if strings.Contains(auth, ":") {
-			authParts := strings.SplitN(auth, ":", 2)
-			config.Username = authParts[0]
-			config.Password = authParts[1]
+		config.Host = strings.TrimSpace(parts[1])
+		if auth == "" || config.Host == "" || !strings.Contains(auth, ":") {
+			return nil, fmt.Errorf("认证格式必须是 user:pass@host:port")
 		}
-		config.Host = parts[1]
+		authParts := strings.SplitN(auth, ":", 2)
+		config.Username = authParts[0]
+		config.Password = authParts[1]
+		if config.Username == "" || config.Password == "" {
+			return nil, fmt.Errorf("用户名和密码不能为空")
+		}
 	} else {
-		config.Host = addr
+		config.Host = strings.TrimSpace(addr)
 	}
 	return config, nil
 }
