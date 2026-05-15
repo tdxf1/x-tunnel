@@ -205,10 +205,13 @@ Phase 6:
 
 - Added `-version` with build metadata fields `buildVersion`, `buildCommit`, and `buildDate`.
 - Added structured-ish stream logs with server stream IDs and UDP association IDs.
+- Added `README.md` with build, local WS, hardened server, troubleshooting, and test examples.
 - Added `docs/troubleshooting.md` for token mismatch, ECH/DNS lookup failures, no smux channel, target policy rejection, and source CIDR rejection.
 - Verified with `go test ./...`: pass.
-- Verified with `go test -cover ./...`: pass, `coverage: 15.7% of statements`.
+- Verified with `go test -cover ./...`: pass, `coverage: 15.8% of statements`.
 - Verified `go run x-tunnel.go -version`: `x-tunnel version=dev commit=unknown build=unknown`.
-- Verified `go run x-tunnel.go -h`: pass and includes `-allow-target`, `-deny-target`, and `-version`.
+- Verified `go run x-tunnel.go -h`: pass and includes `-allow-target`, `-deny-target`, `-version`, and `socks5://`.
+- Verified real TCP log smoke: `phase6_log_smoke=pass hash=09d9c57acdfa0bacb95eb1b4854ea293fa27b5671ed8142f9db9c4995437a05a tcp_size=78465`.
+- Log evidence: server emitted `stream=4 client=240e1179 channel=1 kind=1 target=127.0.0.1:19096`.
 
 Pending for later phases: refactor, final integration smoke tests, and final review.
