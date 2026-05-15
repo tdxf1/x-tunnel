@@ -815,3 +815,17 @@ Verification:
 - `go test -run 'Test(ValidateListenRule|ParseSOCKS5Addr|Socks5UserPassAuthSrv|Socks5Handshake)' -count=1 ./...`: pass.
 - `go test ./...`: pass.
 - `go test -cover ./...`: pass, `coverage: 41.7% of statements`.
+
+Post Phase 8 startup validation subprocess smoke:
+
+- [x] Build the real binary once for invalid startup cases.
+- [x] Verify bad metrics, bad listener auth, bad CIDR, bad IP strategy, and bad upstream SOCKS auth exit non-zero.
+- [x] Assert each failure is emitted from startup validation with `[配置]` in logs.
+- [x] Run focused/full/coverage verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run TestIntegrationStartupValidationFailures -count=1 ./...`: pass.
+- `go test ./...`: pass.
+- `go test -cover ./...`: pass, `coverage: 41.7% of statements`.

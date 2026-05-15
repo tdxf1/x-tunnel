@@ -484,6 +484,62 @@ func TestIntegrationSourceCIDRRejectionMetrics(t *testing.T) {
 	assertMetricsContains(t, fetchHTTP(t, "http://"+metricsAddr+"/metrics"), "x_tunnel_server_source_rejections_total 1")
 }
 
+func TestIntegrationStartupValidationFailures(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	binPath := filepath.Join(t.TempDir(), "x-tunnel")
+	build := exec.CommandContext(ctx, "go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("go build failed: %v\n%s", err, out)
+	}
+
+	longCredential := strings.Repeat("u", 256)
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "bad metrics address",
+			args: []string{"-l", "socks5://127.0.0.1:11080", "-f", "ws://127.0.0.1:1/tunnel", "-metrics", "bad"},
+			want: "metrics 地址无效",
+		},
+		{
+			name: "bad listener auth",
+			args: []string{"-l", "socks5://user@127.0.0.1:11080", "-f", "ws://127.0.0.1:1/tunnel"},
+			want: "监听地址无效",
+		},
+		{
+			name: "bad source cidr",
+			args: []string{"-l", "ws://127.0.0.1:18080/tunnel", "-token", "startup-smoke-token", "-cidr", "not-a-cidr"},
+			want: "source CIDR 配置无效",
+		},
+		{
+			name: "bad ip strategy",
+			args: []string{"-l", "socks5://127.0.0.1:11080", "-f", "ws://127.0.0.1:1/tunnel", "-ips", "banana"},
+			want: "-ips 参数无效",
+		},
+		{
+			name: "bad upstream socks auth",
+			args: []string{"-l", "ws://127.0.0.1:18080/tunnel", "-token", "startup-smoke-token", "-f", "socks5://" + longCredential + ":pass@127.0.0.1:1080"},
+			want: "解析SOCKS5代理地址失败",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			caseCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			runXTunnelExpectStartupFailure(t, caseCtx, binPath, tt.args, "[配置]", tt.want)
+		})
+	}
+}
+
 func TestIntegrationTCPStatusRejectsBlockedTarget(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -552,6 +608,23 @@ func startXTunnel(t *testing.T, ctx context.Context, binPath, logPath string, ar
 		t.Fatalf("start x-tunnel %v: %v", args, err)
 	}
 	return cmd
+}
+
+func runXTunnelExpectStartupFailure(t *testing.T, ctx context.Context, binPath string, args []string, wants ...string) {
+	t.Helper()
+	cmd := exec.CommandContext(ctx, binPath, args...)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("x-tunnel %v exited successfully, want failure\n%s", args, out)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("x-tunnel %v timed out: %v\n%s", args, ctx.Err(), out)
+	}
+	for _, want := range wants {
+		if !bytes.Contains(out, []byte(want)) {
+			t.Fatalf("x-tunnel %v output missing %q:\n%s", args, want, out)
+		}
+	}
 }
 
 func stopProcess(cmd *exec.Cmd) {
