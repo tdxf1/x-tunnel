@@ -1162,6 +1162,90 @@ func TestUDPReplyRejectsOversizedFields(t *testing.T) {
 	}
 }
 
+func FuzzReadSmuxOpenHeader(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte{streamKindTCP, IPStrategyDefault, 0, 0})
+	f.Add([]byte{streamKindTCP, IPStrategyPv4Pv6, 0, 15, 'e', 'x', 'a', 'm', 'p', 'l', 'e', '.', 'c', 'o', 'm', ':', '4', '4', '3'})
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		kind, strategy, target, err := readSmuxOpenHeader(bytes.NewReader(raw))
+		if err != nil {
+			return
+		}
+		var buf bytes.Buffer
+		if err := writeSmuxOpenHeader(&buf, kind, strategy, target); err != nil {
+			t.Fatalf("writeSmuxOpenHeader after successful read returned error: %v", err)
+		}
+	})
+}
+
+func FuzzReadProtocolHello(f *testing.F) {
+	f.Add([]byte{})
+	var ok bytes.Buffer
+	if err := writeProtocolHello(&ok, currentProtocolHello()); err != nil {
+		f.Fatalf("seed protocol hello: %v", err)
+	}
+	f.Add(ok.Bytes())
+	f.Add([]byte{'X', 'T', 'U', 'N', protocolVersion, protocolStatusOK, 0, 1, 0, 0, 0, 1, 'x'})
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		hello, err := readProtocolHello(bytes.NewReader(raw))
+		if err != nil {
+			return
+		}
+		var buf bytes.Buffer
+		if err := writeProtocolHello(&buf, hello); err != nil {
+			t.Fatalf("writeProtocolHello after successful read returned error: %v", err)
+		}
+	})
+}
+
+func FuzzReadTCPOpenStatus(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte{tcpOpenStatusOK, 0, 0})
+	f.Add([]byte{tcpOpenStatusError, 0, 4, 'f', 'a', 'i', 'l'})
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		status, message, err := readTCPOpenStatus(bytes.NewReader(raw))
+		if err != nil {
+			return
+		}
+		var buf bytes.Buffer
+		if err := writeTCPOpenStatus(&buf, status, message); err != nil {
+			t.Fatalf("writeTCPOpenStatus after successful read returned error: %v", err)
+		}
+	})
+}
+
+func FuzzReadChunk(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte{0, 0})
+	f.Add([]byte{0, 5, 'h', 'e', 'l', 'l', 'o'})
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		payload, err := readChunk(bytes.NewReader(raw))
+		if err != nil {
+			return
+		}
+		var buf bytes.Buffer
+		if err := writeChunk(&buf, payload); err != nil {
+			t.Fatalf("writeChunk after successful read returned error: %v", err)
+		}
+	})
+}
+
+func FuzzReadUDPReply(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte{0, 0, 0, 0})
+	f.Add([]byte{0, 10, 0, 4, '1', '.', '2', '.', '3', '.', '4', ':', '5', '3', 'p', 'o', 'n', 'g'})
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		addr, payload, err := readUDPReply(bytes.NewReader(raw))
+		if err != nil {
+			return
+		}
+		var buf bytes.Buffer
+		if err := writeUDPReply(&buf, addr, payload); err != nil {
+			t.Fatalf("writeUDPReply after successful read returned error: %v", err)
+		}
+	})
+}
+
 func TestSOCKS5UDPPacketRoundTrip(t *testing.T) {
 	tests := []struct {
 		name       string

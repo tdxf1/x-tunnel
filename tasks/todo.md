@@ -457,5 +457,18 @@ Verification:
 - `go test -run TestIntegrationTCPStatusRejectsBlockedTarget -count=1 ./...`: pass.
 - `go test ./...`: pass.
 - `go test -cover ./...`: pass, `coverage: 29.3% of statements`.
+
+Post Phase 8 protocol parser fuzz seeds:
+
+- [x] Add Go fuzz seed tests for smux open headers, protocol hello frames, TCP open status frames, chunks, and UDP replies.
+- [x] Keep fuzz tests side-effect free so normal `go test` runs only seed corpora quickly.
+- [x] Run focused fuzz seed tests, full tests, coverage, and commit.
+
+Verification:
+
+- `go test -run 'FuzzRead' -count=1 ./...`: pass.
+- `go test -run 'Test(SmuxOpenHeader|ProtocolHello|TCPOpenStatus|Chunk|UDPReply)' -count=1 ./...`: pass.
+- `go test ./...`: pass.
+- `go test -cover ./...`: pass, `coverage: 29.6% of statements`.
 - `go test ./...`: pass.
 - `go test -cover ./...`: pass, `coverage: 29.3% of statements`.
