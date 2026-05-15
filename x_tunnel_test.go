@@ -147,6 +147,12 @@ func TestWriteMetrics(t *testing.T) {
 	oldStreamRejects := atomic.LoadUint64(&serverStreamRejectSeq)
 	oldTargetRejects := atomic.LoadUint64(&serverTargetRejectSeq)
 	oldUnsupportedStreams := atomic.LoadUint64(&serverUnsupportedStreamSeq)
+	oldServerProtocolOK := atomic.LoadUint64(&serverProtocolOKSeq)
+	oldServerProtocolRejects := atomic.LoadUint64(&serverProtocolRejectSeq)
+	oldServerProtocolFailures := atomic.LoadUint64(&serverProtocolFailureSeq)
+	oldClientProtocolOK := atomic.LoadUint64(&clientProtocolOKSeq)
+	oldClientProtocolLegacy := atomic.LoadUint64(&clientProtocolLegacySeq)
+	oldClientProtocolFailures := atomic.LoadUint64(&clientProtocolFailureSeq)
 	defer func() {
 		atomic.StoreUint64(&serverStreamSeq, oldStreams)
 		atomic.StoreUint64(&udpAssociationSeq, oldUDP)
@@ -157,6 +163,12 @@ func TestWriteMetrics(t *testing.T) {
 		atomic.StoreUint64(&serverStreamRejectSeq, oldStreamRejects)
 		atomic.StoreUint64(&serverTargetRejectSeq, oldTargetRejects)
 		atomic.StoreUint64(&serverUnsupportedStreamSeq, oldUnsupportedStreams)
+		atomic.StoreUint64(&serverProtocolOKSeq, oldServerProtocolOK)
+		atomic.StoreUint64(&serverProtocolRejectSeq, oldServerProtocolRejects)
+		atomic.StoreUint64(&serverProtocolFailureSeq, oldServerProtocolFailures)
+		atomic.StoreUint64(&clientProtocolOKSeq, oldClientProtocolOK)
+		atomic.StoreUint64(&clientProtocolLegacySeq, oldClientProtocolLegacy)
+		atomic.StoreUint64(&clientProtocolFailureSeq, oldClientProtocolFailures)
 		serverSessions.Delete("metrics-test")
 	}()
 	atomic.StoreUint64(&serverStreamSeq, 7)
@@ -168,6 +180,12 @@ func TestWriteMetrics(t *testing.T) {
 	atomic.StoreUint64(&serverStreamRejectSeq, 19)
 	atomic.StoreUint64(&serverTargetRejectSeq, 23)
 	atomic.StoreUint64(&serverUnsupportedStreamSeq, 29)
+	atomic.StoreUint64(&serverProtocolOKSeq, 31)
+	atomic.StoreUint64(&serverProtocolRejectSeq, 37)
+	atomic.StoreUint64(&serverProtocolFailureSeq, 41)
+	atomic.StoreUint64(&clientProtocolOKSeq, 43)
+	atomic.StoreUint64(&clientProtocolLegacySeq, 47)
+	atomic.StoreUint64(&clientProtocolFailureSeq, 53)
 	serverSessions.Store("metrics-test", &ClientSession{clientID: "metrics-test"})
 
 	var buf bytes.Buffer
@@ -183,6 +201,12 @@ func TestWriteMetrics(t *testing.T) {
 		"x_tunnel_server_stream_rejections_total 19",
 		"x_tunnel_server_target_rejections_total 23",
 		"x_tunnel_server_unsupported_streams_total 29",
+		"x_tunnel_server_protocol_negotiations_total 31",
+		"x_tunnel_server_protocol_negotiation_rejections_total 37",
+		"x_tunnel_server_protocol_negotiation_failures_total 41",
+		"x_tunnel_client_protocol_negotiations_total 43",
+		"x_tunnel_client_protocol_legacy_sessions_total 47",
+		"x_tunnel_client_protocol_negotiation_failures_total 53",
 		"x_tunnel_server_sessions",
 	} {
 		if !strings.Contains(got, want) {

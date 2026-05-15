@@ -621,3 +621,16 @@ Verification:
 - `go test -run 'Test(BuildDNSQuery|ValidateECHLookupConfig|ValidateStartupConfig|ExampleConfigFilesLoad)' -count=1 ./...`: pass.
 - `go test ./...`: pass.
 - `go test -cover ./...`: pass, `coverage: 38.2% of statements`.
+
+Post Phase 8 protocol negotiation metrics:
+
+- [x] Add server counters for protocol negotiation success, rejection, and failure.
+- [x] Add client counters for protocol negotiation success, legacy fallback, and failure.
+- [x] Extend metrics unit and integration assertions.
+- [x] Run focused/full/coverage verification and commit.
+
+Verification:
+
+- `go test -run 'Test(WriteMetrics|LocalTunnelIntegration|IntegrationMaxClientsRejectsNewClient|IntegrationTCPStatusRejectsBlockedTarget|NegotiateProtocolHello)' -count=1 ./...`: pass.
+- `go test ./...`: pass.
+- `go test -cover ./...`: pass, `coverage: 38.4% of statements`.

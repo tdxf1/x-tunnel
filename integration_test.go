@@ -839,6 +839,12 @@ func assertMetrics(t *testing.T, got string) {
 		"x_tunnel_server_stream_rejections_total",
 		"x_tunnel_server_target_rejections_total",
 		"x_tunnel_server_unsupported_streams_total",
+		"x_tunnel_server_protocol_negotiations_total",
+		"x_tunnel_server_protocol_negotiation_rejections_total",
+		"x_tunnel_server_protocol_negotiation_failures_total",
+		"x_tunnel_client_protocol_negotiations_total",
+		"x_tunnel_client_protocol_legacy_sessions_total",
+		"x_tunnel_client_protocol_negotiation_failures_total",
 		"x_tunnel_server_sessions",
 	} {
 		if !strings.Contains(got, want) {

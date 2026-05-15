@@ -179,6 +179,12 @@ var (
 	serverStreamRejectSeq      uint64
 	serverTargetRejectSeq      uint64
 	serverUnsupportedStreamSeq uint64
+	serverProtocolOKSeq        uint64
+	serverProtocolRejectSeq    uint64
+	serverProtocolFailureSeq   uint64
+	clientProtocolOKSeq        uint64
+	clientProtocolLegacySeq    uint64
+	clientProtocolFailureSeq   uint64
 )
 
 var (
@@ -2431,6 +2437,18 @@ func writeMetrics(w io.Writer) {
 	fmt.Fprintf(w, "x_tunnel_server_target_rejections_total %d\n", atomic.LoadUint64(&serverTargetRejectSeq))
 	fmt.Fprintf(w, "# TYPE x_tunnel_server_unsupported_streams_total counter\n")
 	fmt.Fprintf(w, "x_tunnel_server_unsupported_streams_total %d\n", atomic.LoadUint64(&serverUnsupportedStreamSeq))
+	fmt.Fprintf(w, "# TYPE x_tunnel_server_protocol_negotiations_total counter\n")
+	fmt.Fprintf(w, "x_tunnel_server_protocol_negotiations_total %d\n", atomic.LoadUint64(&serverProtocolOKSeq))
+	fmt.Fprintf(w, "# TYPE x_tunnel_server_protocol_negotiation_rejections_total counter\n")
+	fmt.Fprintf(w, "x_tunnel_server_protocol_negotiation_rejections_total %d\n", atomic.LoadUint64(&serverProtocolRejectSeq))
+	fmt.Fprintf(w, "# TYPE x_tunnel_server_protocol_negotiation_failures_total counter\n")
+	fmt.Fprintf(w, "x_tunnel_server_protocol_negotiation_failures_total %d\n", atomic.LoadUint64(&serverProtocolFailureSeq))
+	fmt.Fprintf(w, "# TYPE x_tunnel_client_protocol_negotiations_total counter\n")
+	fmt.Fprintf(w, "x_tunnel_client_protocol_negotiations_total %d\n", atomic.LoadUint64(&clientProtocolOKSeq))
+	fmt.Fprintf(w, "# TYPE x_tunnel_client_protocol_legacy_sessions_total counter\n")
+	fmt.Fprintf(w, "x_tunnel_client_protocol_legacy_sessions_total %d\n", atomic.LoadUint64(&clientProtocolLegacySeq))
+	fmt.Fprintf(w, "# TYPE x_tunnel_client_protocol_negotiation_failures_total counter\n")
+	fmt.Fprintf(w, "x_tunnel_client_protocol_negotiation_failures_total %d\n", atomic.LoadUint64(&clientProtocolFailureSeq))
 	fmt.Fprintf(w, "# TYPE x_tunnel_server_sessions gauge\n")
 	fmt.Fprintf(w, "x_tunnel_server_sessions %d\n", countServerSessions())
 }
@@ -2634,19 +2652,23 @@ func handleSmuxStream(session *ClientSession, ch *WSChannel, stream *smux.Stream
 	case streamKindHello:
 		clientHello, err := readProtocolHello(stream)
 		if err != nil {
+			atomic.AddUint64(&serverProtocolFailureSeq, 1)
 			log.Printf("[服务端] 客户ID:%s 协议协商读取失败: %v, 通道:%d", shortID(session.clientID), err, ch.id)
 			return
 		}
 		response := negotiateProtocolHello(clientHello)
 		if err := writeProtocolHello(stream, response); err != nil {
+			atomic.AddUint64(&serverProtocolFailureSeq, 1)
 			log.Printf("[服务端] 客户ID:%s 协议协商响应失败: %v, 通道:%d", shortID(session.clientID), err, ch.id)
 			return
 		}
 		if response.Status != protocolStatusOK {
+			atomic.AddUint64(&serverProtocolRejectSeq, 1)
 			log.Printf("[服务端] 客户ID:%s 协议协商拒绝: %s, 通道:%d", shortID(session.clientID), response.Message, ch.id)
 			return
 		}
 		atomic.StoreUint32(&ch.capabilities, response.Capabilities)
+		atomic.AddUint64(&serverProtocolOKSeq, 1)
 		log.Printf("[服务端] 客户ID:%s 协议协商成功: version=%d caps=0x%x, 通道:%d", shortID(session.clientID), response.Version, response.Capabilities, ch.id)
 	case streamKindPing:
 		payload := make([]byte, 8)
@@ -2848,6 +2870,7 @@ func (p *ECHPool) dialAndServe(ctx context.Context, idx int, ip string) {
 		}
 		caps, legacyProtocol, err := negotiateClientProtocol(sess, cfg.RTTProbeTimeout)
 		if err != nil {
+			atomic.AddUint64(&clientProtocolFailureSeq, 1)
 			_ = sess.Close()
 			_ = wsConn.Close()
 			if !sleepBeforeReconnect(fmt.Sprintf("协议协商失败: %v", err)) {
@@ -2856,8 +2879,10 @@ func (p *ECHPool) dialAndServe(ctx context.Context, idx int, ip string) {
 			continue
 		}
 		if legacyProtocol {
+			atomic.AddUint64(&clientProtocolLegacySeq, 1)
 			log.Printf("[客户端] 通道 %d (IP:%s) 使用旧协议模式（服务端未响应 hello）", chID, ipLabel)
 		} else {
+			atomic.AddUint64(&clientProtocolOKSeq, 1)
 			log.Printf("[客户端] 通道 %d (IP:%s) 协议协商成功: version=%d caps=0x%x", chID, ipLabel, protocolVersion, caps)
 		}
 		p.wsConnsMu.Lock()
