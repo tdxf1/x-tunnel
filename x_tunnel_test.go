@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseIPStrategy(t *testing.T) {
@@ -28,6 +29,51 @@ func TestParseIPStrategy(t *testing.T) {
 				t.Fatalf("parseIPStrategy(%q) = %d, want %d", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBaseReconnectDelay(t *testing.T) {
+	oldCfg := cfg
+	defer func() { cfg = oldCfg }()
+	cfg.ReconnectDelay = time.Second
+	cfg.ReconnectMaxDelay = 5 * time.Second
+
+	tests := []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{attempt: 0, want: time.Second},
+		{attempt: 1, want: 2 * time.Second},
+		{attempt: 2, want: 4 * time.Second},
+		{attempt: 3, want: 5 * time.Second},
+		{attempt: 10, want: 5 * time.Second},
+	}
+
+	for _, tt := range tests {
+		if got := baseReconnectDelay(tt.attempt); got != tt.want {
+			t.Fatalf("baseReconnectDelay(%d) = %s, want %s", tt.attempt, got, tt.want)
+		}
+	}
+}
+
+func TestReconnectDelayJitterBounds(t *testing.T) {
+	oldCfg := cfg
+	defer func() { cfg = oldCfg }()
+	cfg.ReconnectDelay = time.Second
+	cfg.ReconnectMaxDelay = 10 * time.Second
+	cfg.ReconnectJitter = 500 * time.Millisecond
+
+	got := reconnectDelay(1)
+	if got < 2*time.Second {
+		t.Fatalf("reconnectDelay below base: %s", got)
+	}
+	if got >= 2500*time.Millisecond {
+		t.Fatalf("reconnectDelay above jitter bound: %s", got)
+	}
+
+	cfg.ReconnectJitter = 0
+	if got := reconnectDelay(1); got != 2*time.Second {
+		t.Fatalf("reconnectDelay without jitter = %s, want 2s", got)
 	}
 }
 

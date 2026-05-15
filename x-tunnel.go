@@ -36,7 +36,12 @@ type GlobalConfig struct {
 	DialTimeout        time.Duration
 	WSHandshakeTimeout time.Duration
 	ReconnectDelay     time.Duration
+	ReconnectMaxDelay  time.Duration
+	ReconnectJitter    time.Duration
 	RTTProbeTimeout    time.Duration
+	DNSQueryTimeout    time.Duration
+	ECHRetryDelay      time.Duration
+	UDPReadTimeout     time.Duration
 
 	ReadBuf int
 }
@@ -45,11 +50,56 @@ var cfg = GlobalConfig{
 	DialTimeout:        3 * time.Second,
 	WSHandshakeTimeout: 5 * time.Second,
 	ReconnectDelay:     1 * time.Second,
+	ReconnectMaxDelay:  30 * time.Second,
+	ReconnectJitter:    500 * time.Millisecond,
 	RTTProbeTimeout:    2 * time.Second,
+	DNSQueryTimeout:    3 * time.Second,
+	ECHRetryDelay:      2 * time.Second,
+	UDPReadTimeout:     1 * time.Second,
 	ReadBuf:            64 * 1024,
 }
 
 var bufPool = sync.Pool{New: func() any { b := make([]byte, 64*1024); return &b }}
+
+func baseReconnectDelay(attempt int) time.Duration {
+	if cfg.ReconnectDelay <= 0 {
+		return 0
+	}
+	delay := cfg.ReconnectDelay
+	for i := 0; i < attempt; i++ {
+		if cfg.ReconnectMaxDelay > 0 && delay >= cfg.ReconnectMaxDelay {
+			return cfg.ReconnectMaxDelay
+		}
+		delay *= 2
+		if cfg.ReconnectMaxDelay > 0 && delay > cfg.ReconnectMaxDelay {
+			return cfg.ReconnectMaxDelay
+		}
+	}
+	return delay
+}
+
+func reconnectDelay(attempt int) time.Duration {
+	delay := baseReconnectDelay(attempt)
+	if delay <= 0 || cfg.ReconnectJitter <= 0 {
+		return delay
+	}
+	jitterLimit := cfg.ReconnectJitter
+	if half := delay / 2; half > 0 && half < jitterLimit {
+		jitterLimit = half
+	}
+	return delay + randomDuration(jitterLimit)
+}
+
+func randomDuration(limit time.Duration) time.Duration {
+	if limit <= 0 {
+		return 0
+	}
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(limit)))
+	if err != nil {
+		return 0
+	}
+	return time.Duration(n.Int64())
+}
 
 // ======================== 全局参数 ========================
 
@@ -922,18 +972,18 @@ func prepareECH() error {
 		echBase64, err := queryHTTPSRecord(echDomain, dnsServer)
 		if err != nil {
 			log.Printf("[客户端] DNS 查询失败: %v，重试...", err)
-			time.Sleep(2 * time.Second)
+			time.Sleep(cfg.ECHRetryDelay)
 			continue
 		}
 		if echBase64 == "" {
 			log.Printf("[客户端] 未找到 ECH 参数，重试...")
-			time.Sleep(2 * time.Second)
+			time.Sleep(cfg.ECHRetryDelay)
 			continue
 		}
 		raw, err := base64.StdEncoding.DecodeString(echBase64)
 		if err != nil {
 			log.Printf("[客户端] ECH Base64 解码失败: %v，重试...", err)
-			time.Sleep(2 * time.Second)
+			time.Sleep(cfg.ECHRetryDelay)
 			continue
 		}
 		echListMu.Lock()
@@ -1032,7 +1082,7 @@ func queryDNSUDP(domain, dnsServer string) (string, error) {
 	}
 	defer conn.Close()
 
-	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(cfg.DNSQueryTimeout))
 
 	if _, err = conn.Write(query); err != nil {
 		return "", fmt.Errorf("发送查询失败: %v", err)
@@ -1066,7 +1116,7 @@ func queryDoH(domain, dohURL string) (string, error) {
 	}
 	req.Header.Set("Accept", "application/dns-message")
 	req.Header.Set("Content-Type", "application/dns-message")
-	client := &http.Client{Timeout: 3 * time.Second}
+	client := &http.Client{Timeout: cfg.DNSQueryTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -1585,6 +1635,7 @@ func handleSmuxStream(session *ClientSession, ch *WSChannel, stream *smux.Stream
 			tcpConn, err = dialTCPWithStrategy(target, strategy)
 		}
 		if err != nil {
+			log.Printf("[服务端] 客户ID:%s TCP 连接失败: %s, err=%v, 通道:%d", shortID(session.clientID), target, err, ch.id)
 			return
 		}
 		proxyConnStream(tcpConn, stream)
@@ -1603,10 +1654,12 @@ func handleSmuxStream(session *ClientSession, ch *WSChannel, stream *smux.Stream
 		} else {
 			addr, errResolve := resolveUDPWithStrategy(target, strategy)
 			if errResolve != nil {
+				log.Printf("[服务端] 客户ID:%s UDP 解析失败: %s, err=%v, 通道:%d", shortID(session.clientID), target, errResolve, ch.id)
 				return
 			}
 			udpConn, errListen := net.ListenUDP("udp", nil)
 			if errListen != nil {
+				log.Printf("[服务端] 客户ID:%s UDP 监听失败: %s, err=%v, 通道:%d", shortID(session.clientID), target, errListen, ch.id)
 				return
 			}
 			relay = &DirectUDPRelayer{conn: udpConn, target: addr}
@@ -1627,6 +1680,7 @@ func handleSmuxStream(session *ClientSession, ch *WSChannel, stream *smux.Stream
 					continue
 				}
 				if _, e = relay.Write(packet); e != nil {
+					log.Printf("[服务端] 客户ID:%s UDP 写入失败: %s, err=%v, 通道:%d", shortID(session.clientID), target, e, ch.id)
 					return
 				}
 			}
@@ -1635,7 +1689,7 @@ func handleSmuxStream(session *ClientSession, ch *WSChannel, stream *smux.Stream
 		buf := *bufPtr
 		defer bufPool.Put(bufPtr)
 		for {
-			_ = relay.SetReadDeadline(time.Now().Add(1 * time.Second))
+			_ = relay.SetReadDeadline(time.Now().Add(cfg.UDPReadTimeout))
 			n, addr, e := relay.Read(buf)
 			if e != nil {
 				if netErr, ok := e.(net.Error); ok && netErr.Timeout() {
@@ -1646,9 +1700,11 @@ func handleSmuxStream(session *ClientSession, ch *WSChannel, stream *smux.Stream
 						continue
 					}
 				}
+				log.Printf("[服务端] 客户ID:%s UDP 读取失败: %s, err=%v, 通道:%d", shortID(session.clientID), target, e, ch.id)
 				return
 			}
 			if err := writeUDPReply(stream, addr.String(), buf[:n]); err != nil {
+				log.Printf("[服务端] 客户ID:%s UDP 响应写入失败: %s, err=%v, 通道:%d", shortID(session.clientID), target, err, ch.id)
 				return
 			}
 		}
@@ -1703,27 +1759,31 @@ func (p *ECHPool) dialAndServe(idx int, ip string) {
 	if strings.TrimSpace(ipLabel) == "" {
 		ipLabel = "自动解析"
 	}
+	reconnectAttempt := 0
+	sleepBeforeReconnect := func(reason string) {
+		delay := reconnectDelay(reconnectAttempt)
+		log.Printf("[客户端] 通道 %d (IP:%s) %s，%s 后重试 (attempt=%d)", chID, ipLabel, reason, delay, reconnectAttempt+1)
+		reconnectAttempt++
+		time.Sleep(delay)
+	}
 	for {
 		wsConn, err := dialWebSocketWithECH(p.wsServerAddr, 3, ip, p.clientID, chID)
 		if err != nil {
-			log.Printf("[客户端] 通道 %d (IP:%s) 连接失败: %v", chID, ipLabel, err)
-			time.Sleep(3 * time.Second)
+			sleepBeforeReconnect(fmt.Sprintf("连接失败: %v", err))
 			continue
 		}
 		wsNet := newWSNetConn(wsConn)
 		sess, err := smux.Client(wsNet, nil)
 		if err != nil {
 			_ = wsConn.Close()
-			log.Printf("[客户端] 通道 %d (IP:%s) smux 初始化失败: %v", chID, ipLabel, err)
-			time.Sleep(cfg.ReconnectDelay)
+			sleepBeforeReconnect(fmt.Sprintf("smux 初始化失败: %v", err))
 			continue
 		}
 		legacyProtocol, err := negotiateClientProtocol(sess, cfg.RTTProbeTimeout)
 		if err != nil {
 			_ = sess.Close()
 			_ = wsConn.Close()
-			log.Printf("[客户端] 通道 %d (IP:%s) 协议协商失败: %v", chID, ipLabel, err)
-			time.Sleep(cfg.ReconnectDelay)
+			sleepBeforeReconnect(fmt.Sprintf("协议协商失败: %v", err))
 			continue
 		}
 		if legacyProtocol {
@@ -1736,6 +1796,7 @@ func (p *ECHPool) dialAndServe(idx int, ip string) {
 		p.channelRTT[idx] = 0
 		p.wsConnsMu.Unlock()
 		log.Printf("[客户端] 通道 %d (IP:%s) 就绪 (smux)", chID, ipLabel)
+		reconnectAttempt = 0
 		if rtt, err := p.probeChannelRTTOnce(sess, cfg.RTTProbeTimeout); err == nil {
 			atomic.StoreInt64(&p.channelRTT[idx], rtt)
 		}
@@ -1764,8 +1825,7 @@ func (p *ECHPool) dialAndServe(idx int, ip string) {
 		if probeErr != nil {
 			log.Printf("[客户端] 通道 %d 断开原因: %v", chID, probeErr)
 		}
-		log.Printf("[客户端] 通道 %d 断开，重连中...", chID)
-		time.Sleep(cfg.ReconnectDelay)
+		sleepBeforeReconnect("断开")
 	}
 }
 
@@ -2102,6 +2162,7 @@ func runTCPListener(rule string) {
 func handleLocalTCP(c net.Conn, target string) {
 	stream, _, decision, err := echPool.openTCPStream(target)
 	if err != nil {
+		log.Printf("[客户端] %s TCP转发 打开失败 %s: %v", clientSourceAddr(c), target, err)
 		_ = c.Close()
 		return
 	}
@@ -2171,7 +2232,7 @@ func dialWebSocketWithECH(addr string, retries int, ip string, clientID string, 
 		if e != nil {
 			if i < retries {
 				_ = refreshECH()
-				time.Sleep(1 * time.Second)
+				time.Sleep(cfg.ECHRetryDelay)
 				continue
 			}
 			return nil, e
@@ -2187,7 +2248,7 @@ func dialWebSocketWithECH(addr string, retries int, ip string, clientID string, 
 			}
 			if !fallback && (strings.Contains(err.Error(), "ECH") || strings.Contains(err.Error(), "ech")) && i < retries {
 				_ = refreshECH()
-				time.Sleep(1 * time.Second)
+				time.Sleep(cfg.ECHRetryDelay)
 				continue
 			}
 			return nil, err
@@ -2351,6 +2412,7 @@ func handleSOCKS5Connect(c net.Conn, target string) {
 	}
 	stream, _, decision, err := echPool.openTCPStream(target)
 	if err != nil {
+		log.Printf("[客户端] %s SOCKS5 打开失败 %s: %v", clientSourceAddr(c), target, err)
 		_ = c.Close()
 		return
 	}
@@ -2462,6 +2524,7 @@ func (a *UDPAssociation) send(target string, data []byte) {
 	if needStart {
 		s, id, decision, err := a.pool.openUDPStream(target)
 		if err != nil {
+			log.Printf("[客户端] %s SOCKS5-UDP 打开失败 %s: %v", clientSourceAddr(a.tcpConn), target, err)
 			a.Close()
 			return
 		}
@@ -2665,6 +2728,7 @@ func handleHTTP(c net.Conn, cfgp *ProxyConfig) {
 
 	stream, _, decision, err := echPool.openTCPStream(target)
 	if err != nil {
+		log.Printf("[客户端] %s HTTP 打开失败 %s: %v", clientSourceAddr(c), target, err)
 		return
 	}
 	if len(first) > 0 {

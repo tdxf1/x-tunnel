@@ -58,17 +58,17 @@ Verification:
 
 ### Phase 4: Reliability and Lifecycle, 09:30-12:00
 
-- [ ] Replace repeated magic timeout literals with config fields where practical.
+- [x] Replace repeated magic timeout literals with config fields where practical.
 - [ ] Add listener/server context plumbing where it can be done without a large rewrite.
-- [ ] Improve reconnect backoff to avoid fixed retry storms.
+- [x] Improve reconnect backoff to avoid fixed retry storms.
 - [ ] Ensure goroutines exit on stream/session close in TCP and UDP paths.
-- [ ] Add clearer error logs for failed TCP/UDP target dial/open.
+- [x] Add clearer error logs for failed TCP/UDP target dial/open.
 
 Verification:
 
-- [ ] `go test ./...`
-- [ ] Local connectivity smoke test for SOCKS5 and TCP forward.
-- [ ] Short reconnect test by killing/restarting local server.
+- [x] `go test ./...`
+- [x] Local connectivity smoke test for SOCKS5 and TCP forward.
+- [x] Short reconnect test by killing/restarting local server.
 
 ### Phase 5: Security Hardening, 12:00-14:00
 
@@ -164,3 +164,18 @@ Phase 3:
 - Negotiation evidence: client log contained `协议协商成功: version=1 caps=0xf`; server log contained `协议协商成功: version=1 caps=0xf`.
 
 Pending for later phases: reliability/security changes, integration smoke tests, and final review.
+
+Phase 4 partial:
+
+- Added config fields for reconnect max delay/jitter, DNS query timeout, ECH retry delay, and UDP read timeout.
+- Replaced practical hard-coded DNS/ECH/UDP time literals with config values.
+- Added exponential reconnect backoff with crypto-random jitter and unit coverage for base delay and jitter bounds.
+- Added clearer logs for failed client stream opens and server TCP/UDP target failures.
+- Verified with `go test ./...`: pass.
+- Verified with `go test -cover ./...`: pass, `coverage: 12.3% of statements`.
+- Verified reconnect smoke test by starting the client before the WS server, then starting the server and confirming recovery.
+- Reconnect smoke result: `phase4_reconnect_smoke=pass hash=3db3ab0c56d7ea82789a83e33a7cf7634e95421e2b7c014e82b639d847c0acb8 socks_size=69297 tcp_size=69297`.
+- Backoff evidence: first failure logged `1.044365433s 后重试 (attempt=1)`.
+- Negotiation evidence after reconnect: client and server logs both contained `协议协商成功`, `version=1`, and `caps=0xf`.
+
+Remaining Phase 4 work: listener/server context plumbing and a focused goroutine lifecycle review.
