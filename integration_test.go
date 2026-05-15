@@ -58,6 +58,7 @@ func TestLocalTunnelIntegration(t *testing.T) {
 	tcpAddr := freeTCPAddr(t)
 	httpProxyAddr := freeTCPAddr(t)
 	metricsAddr := freeTCPAddr(t)
+	clientMetricsAddr := freeTCPAddr(t)
 
 	serverLog := filepath.Join(t.TempDir(), "server.log")
 	clientLog := filepath.Join(t.TempDir(), "client.log")
@@ -80,11 +81,13 @@ func TestLocalTunnelIntegration(t *testing.T) {
 		"-f", "ws://"+wsAddr+"/tunnel",
 		"-token", "integration-token",
 		"-n", "1",
+		"-metrics", clientMetricsAddr,
 	)
 	defer stopProcess(client)
 	waitTCP(t, ctx, socksAddr)
 	waitTCP(t, ctx, tcpAddr)
 	waitTCP(t, ctx, httpProxyAddr)
+	waitTCP(t, ctx, clientMetricsAddr)
 	waitLogContains(t, ctx, clientLog, "协议协商成功")
 	waitLogContains(t, ctx, serverLog, "协议协商成功")
 
@@ -95,7 +98,12 @@ func TestLocalTunnelIntegration(t *testing.T) {
 	assertBody(t, "socks5", fetchViaSOCKS5(t, socksAddr, targetAddr, "/payload"), body)
 	udpTargetAddr := startUDPEcho(t)
 	assertBody(t, "socks5 udp", string(fetchUDPViaSOCKS5(t, socksAddr, udpTargetAddr, []byte("ping"))), "echo:ping")
-	assertMetrics(t, fetchHTTP(t, "http://"+metricsAddr+"/metrics"))
+	serverMetrics := fetchHTTP(t, "http://"+metricsAddr+"/metrics")
+	assertMetrics(t, serverMetrics)
+	assertMetricsContains(t, serverMetrics, "x_tunnel_server_protocol_negotiations_total 1")
+	clientMetrics := fetchHTTP(t, "http://"+clientMetricsAddr+"/metrics")
+	assertMetrics(t, clientMetrics)
+	assertMetricsContains(t, clientMetrics, "x_tunnel_client_protocol_negotiations_total 1")
 
 	badClient := startXTunnel(t, ctx, binPath, badClientLog,
 		"-l", "socks5://"+freeTCPAddr(t),

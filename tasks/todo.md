@@ -634,3 +634,16 @@ Verification:
 - `go test -run 'Test(WriteMetrics|LocalTunnelIntegration|IntegrationMaxClientsRejectsNewClient|IntegrationTCPStatusRejectsBlockedTarget|NegotiateProtocolHello)' -count=1 ./...`: pass.
 - `go test ./...`: pass.
 - `go test -cover ./...`: pass, `coverage: 38.4% of statements`.
+
+Post Phase 8 protocol metrics integration values:
+
+- [x] Expose metrics on the client side during local tunnel integration.
+- [x] Assert server protocol negotiation success counter increments after a real client hello.
+- [x] Assert client protocol negotiation success counter increments after a real server response.
+- [x] Run focused/full/coverage verification and commit.
+
+Verification:
+
+- `go test -run TestLocalTunnelIntegration -count=1 ./...`: pass.
+- `go test ./...`: pass.
+- `go test -cover ./...`: pass, `coverage: 38.4% of statements`.
