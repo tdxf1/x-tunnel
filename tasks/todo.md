@@ -515,14 +515,6 @@ Verification:
 - `go test ./...`: pass.
 - `go test -cover ./...`: pass, `coverage: 30.4% of statements`.
 
-Post Phase 8 startup config validation extraction:
-
-- [ ] Extract startup listener/mode/forward validation from `main()` into error-returning helpers.
-- [ ] Preserve existing server/client behavior while returning parsed runtime config to `main()`.
-- [ ] Classify listener schemes from parsed lowercase URLs instead of string prefixes.
-- [ ] Add unit coverage for valid server/client configs and invalid mixed listeners, missing forward, bad metrics, bad `-ip`, bad forward scheme, and client cert on `ws://`.
-- [ ] Run focused startup validation tests, full tests, coverage, and commit.
-
 Post Phase 8 local proxy auth parsing:
 
 - [x] Require local SOCKS5/HTTP listener auth to use complete `user:pass@host:port` syntax.
@@ -566,12 +558,13 @@ Verification:
 Post Phase 8 startup validation extraction:
 
 - [x] Extract listener classification and client/server startup validation out of `main`.
-- [x] Preserve existing server/client behavior while failing invalid config before pool/listener startup.
-- [x] Add unit coverage for TCP forward parsing, listener classification, and client startup config validation.
+- [x] Preserve existing server/client behavior while failing invalid config before metrics, pool, ECH, or listener startup.
+- [x] Classify listener schemes from parsed lowercase URLs instead of string prefixes.
+- [x] Add unit coverage for TCP forward parsing, listener classification, valid server/client startup config, common invalid startup configs, and example config validation.
 - [x] Run focused/full/coverage verification and commit.
 
 Verification:
 
-- `go test -run 'Test(ParseTCPForwardRule|ClassifyListeners|ValidateClientStartupConfig|ValidateServerStartupConfig|ValidateStartupConfig|ValidateListenRule|IntegrationSourceCIDRRejectionMetrics)' -count=1 ./...`: pass.
+- `go test -run 'Test(ParseTCPForwardRule|ClassifyListeners|ValidateClientStartupConfig|ValidateServerStartupConfig|ValidateStartupConfig|ValidateListenRule|ExampleConfigFilesLoad|IntegrationSourceCIDRRejectionMetrics)' -count=1 ./...`: pass.
 - `go test ./...`: pass.
 - `go test -cover ./...`: pass, `coverage: 34.0% of statements`.
