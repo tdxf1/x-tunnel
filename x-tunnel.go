@@ -3798,6 +3798,7 @@ func handleHTTP(c net.Conn, cfgp *ProxyConfig) {
 			return
 		}
 	}
+	req.Header.Del("Proxy-Authorization")
 
 	target := req.Host
 	if !strings.Contains(target, ":") {

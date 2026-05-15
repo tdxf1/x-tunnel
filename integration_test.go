@@ -8,6 +8,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -115,6 +116,81 @@ func TestLocalTunnelIntegration(t *testing.T) {
 	waitLogContains(t, ctx, badClientLog, "认证失败")
 	waitLogContains(t, ctx, serverLog, "Token 认证失败")
 	assertMetricsContains(t, fetchHTTP(t, "http://"+metricsAddr+"/metrics"), "x_tunnel_server_auth_rejections_total 1")
+}
+
+func TestIntegrationLocalProxyAuth(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	const body = "x-tunnel local proxy auth payload\n"
+	originSawProxyAuth := make(chan string, 10)
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Proxy-Authorization"); got != "" {
+			originSawProxyAuth <- got
+		}
+		_, _ = w.Write([]byte(body))
+	}))
+	defer origin.Close()
+	targetAddr := strings.TrimPrefix(origin.URL, "http://")
+
+	binPath := filepath.Join(t.TempDir(), "x-tunnel")
+	build := exec.CommandContext(ctx, "go", "build", "-o", binPath, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("go build failed: %v\n%s", err, out)
+	}
+
+	wsAddr := freeTCPAddr(t)
+	socksAddr := freeTCPAddr(t)
+	httpProxyAddr := freeTCPAddr(t)
+	serverLog := filepath.Join(t.TempDir(), "proxy-auth-server.log")
+	clientLog := filepath.Join(t.TempDir(), "proxy-auth-client.log")
+
+	server := startXTunnel(t, ctx, binPath, serverLog,
+		"-l", "ws://"+wsAddr+"/tunnel",
+		"-token", "proxy-auth-token",
+		"-cidr", "127.0.0.1/32",
+		"-allow-target", "127.0.0.0/8",
+	)
+	defer stopProcess(server)
+	waitTCP(t, ctx, wsAddr)
+
+	client := startXTunnel(t, ctx, binPath, clientLog,
+		"-l", "socks5://user:pass@"+socksAddr+",http://user:pass@"+httpProxyAddr,
+		"-f", "ws://"+wsAddr+"/tunnel",
+		"-token", "proxy-auth-token",
+		"-n", "1",
+	)
+	defer stopProcess(client)
+	waitTCP(t, ctx, socksAddr)
+	waitTCP(t, ctx, httpProxyAddr)
+	waitLogContains(t, ctx, clientLog, "协议协商成功")
+	waitLogContains(t, ctx, serverLog, "协议协商成功")
+
+	if got := fetchViaHTTPProxyStatus(t, httpProxyAddr, "http://"+targetAddr+"/payload"); got != http.StatusProxyAuthRequired {
+		t.Fatalf("HTTP proxy status without auth = %d, want %d", got, http.StatusProxyAuthRequired)
+	}
+	if got := fetchViaHTTPProxyStatusWithAuth(t, httpProxyAddr, "http://"+targetAddr+"/payload", "user", "wrong"); got != http.StatusProxyAuthRequired {
+		t.Fatalf("HTTP proxy status with wrong auth = %d, want %d", got, http.StatusProxyAuthRequired)
+	}
+	assertBody(t, "http proxy auth", fetchViaHTTPProxyWithAuth(t, httpProxyAddr, "http://"+targetAddr+"/payload", "user", "pass"), body)
+	assertBody(t, "http connect auth", fetchViaHTTPConnectWithAuth(t, httpProxyAddr, targetAddr, "/payload", "user", "pass"), body)
+
+	if got := socks5SelectedMethod(t, socksAddr, []byte{0x00}); got == 0x00 {
+		t.Fatalf("SOCKS5 selected no-auth method on authenticated listener")
+	}
+	if got := socks5UserPassAuthStatus(t, socksAddr, "user", "wrong"); got != 0x01 {
+		t.Fatalf("SOCKS5 wrong auth status = %d, want 1", got)
+	}
+	assertBody(t, "socks5 auth", fetchViaSOCKS5WithAuth(t, socksAddr, targetAddr, "/payload", "user", "pass"), body)
+	select {
+	case got := <-originSawProxyAuth:
+		t.Fatalf("origin received Proxy-Authorization header %q", got)
+	default:
+	}
 }
 
 func TestIntegrationLocalWSSFallback(t *testing.T) {
@@ -483,14 +559,7 @@ func fetchHTTPStatus(t *testing.T, rawURL string) int {
 
 func fetchViaHTTPProxy(t *testing.T, proxyAddr, rawURL string) string {
 	t.Helper()
-	proxyURL, err := url.Parse("http://" + proxyAddr)
-	if err != nil {
-		t.Fatalf("parse proxy URL: %v", err)
-	}
-	client := &http.Client{
-		Timeout:   integrationIOTimeout,
-		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
-	}
+	client := httpProxyClient(t, proxyAddr, "", "")
 	resp, err := client.Get(rawURL)
 	if err != nil {
 		t.Fatalf("proxy GET %s: %v", rawURL, err)
@@ -499,25 +568,62 @@ func fetchViaHTTPProxy(t *testing.T, proxyAddr, rawURL string) string {
 	return readOKBody(t, resp)
 }
 
+func fetchViaHTTPProxyWithAuth(t *testing.T, proxyAddr, rawURL, username, password string) string {
+	t.Helper()
+	client := httpProxyClient(t, proxyAddr, username, password)
+	resp, err := client.Get(rawURL)
+	if err != nil {
+		t.Fatalf("authenticated proxy GET %s: %v", rawURL, err)
+	}
+	defer resp.Body.Close()
+	return readOKBody(t, resp)
+}
+
 func fetchViaHTTPProxyStatus(t *testing.T, proxyAddr, rawURL string) int {
 	t.Helper()
-	proxyURL, err := url.Parse("http://" + proxyAddr)
-	if err != nil {
-		t.Fatalf("parse proxy URL: %v", err)
-	}
-	client := &http.Client{
-		Timeout:   integrationIOTimeout,
-		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
-	}
+	client := httpProxyClient(t, proxyAddr, "", "")
 	resp, err := client.Get(rawURL)
 	if err != nil {
 		t.Fatalf("proxy GET %s: %v", rawURL, err)
 	}
 	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
 	return resp.StatusCode
 }
 
+func fetchViaHTTPProxyStatusWithAuth(t *testing.T, proxyAddr, rawURL, username, password string) int {
+	t.Helper()
+	client := httpProxyClient(t, proxyAddr, username, password)
+	resp, err := client.Get(rawURL)
+	if err != nil {
+		t.Fatalf("authenticated proxy GET %s: %v", rawURL, err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode
+}
+
+func httpProxyClient(t *testing.T, proxyAddr, username, password string) *http.Client {
+	t.Helper()
+	proxyURL, err := url.Parse("http://" + proxyAddr)
+	if err != nil {
+		t.Fatalf("parse proxy URL: %v", err)
+	}
+	if username != "" || password != "" {
+		proxyURL.User = url.UserPassword(username, password)
+	}
+	return &http.Client{
+		Timeout:   integrationIOTimeout,
+		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
+	}
+}
+
 func fetchViaHTTPConnect(t *testing.T, proxyAddr, targetAddr, path string) string {
+	t.Helper()
+	return fetchViaHTTPConnectWithAuth(t, proxyAddr, targetAddr, path, "", "")
+}
+
+func fetchViaHTTPConnectWithAuth(t *testing.T, proxyAddr, targetAddr, path, username, password string) string {
 	t.Helper()
 	conn, err := net.DialTimeout("tcp", proxyAddr, 3*time.Second)
 	if err != nil {
@@ -528,7 +634,12 @@ func fetchViaHTTPConnect(t *testing.T, proxyAddr, targetAddr, path string) strin
 		t.Fatalf("set HTTP proxy deadline: %v", err)
 	}
 
-	fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", targetAddr, targetAddr)
+	fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n", targetAddr, targetAddr)
+	if username != "" || password != "" {
+		auth := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
+		fmt.Fprintf(conn, "Proxy-Authorization: Basic %s\r\n", auth)
+	}
+	fmt.Fprint(conn, "\r\n")
 	br := bufio.NewReader(conn)
 	status, err := br.ReadString('\n')
 	if err != nil {
@@ -572,41 +683,110 @@ func fetchViaSOCKS5(t *testing.T, proxyAddr, targetAddr, path string) string {
 		t.Fatalf("SOCKS5 greeting = %v", greeting)
 	}
 
-	host, portStr, err := net.SplitHostPort(targetAddr)
-	if err != nil {
-		t.Fatalf("split target addr: %v", err)
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		t.Fatalf("parse target port: %v", err)
-	}
-	req := []byte{0x05, 0x01, 0x00}
-	if ip := net.ParseIP(host); ip != nil {
-		if ip4 := ip.To4(); ip4 != nil {
-			req = append(req, 0x01)
-			req = append(req, ip4...)
-		} else {
-			req = append(req, 0x04)
-			req = append(req, ip.To16()...)
-		}
-	} else {
-		req = append(req, 0x03, byte(len(host)))
-		req = append(req, []byte(host)...)
-	}
-	req = append(req, byte(port>>8), byte(port))
-	if _, err := conn.Write(req); err != nil {
-		t.Fatalf("write SOCKS5 connect: %v", err)
-	}
-	resp := make([]byte, 10)
-	if _, err := io.ReadFull(conn, resp); err != nil {
-		t.Fatalf("read SOCKS5 connect response: %v", err)
-	}
-	if resp[1] != 0x00 {
-		t.Fatalf("SOCKS5 connect status = %d", resp[1])
+	writeSOCKS5ConnectRequest(t, conn, targetAddr)
+	if got := readSOCKS5ConnectStatus(t, conn); got != 0x00 {
+		t.Fatalf("SOCKS5 connect status = %d", got)
 	}
 
 	fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", path, targetAddr)
 	return readHTTPResponseBody(t, bufio.NewReader(conn))
+}
+
+func fetchViaSOCKS5WithAuth(t *testing.T, proxyAddr, targetAddr, path, username, password string) string {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", proxyAddr, 3*time.Second)
+	if err != nil {
+		t.Fatalf("dial SOCKS5 proxy: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(integrationIOTimeout)); err != nil {
+		t.Fatalf("set SOCKS5 deadline: %v", err)
+	}
+
+	if got := socks5UserPassAuthStatusConn(t, conn, username, password); got != 0x00 {
+		t.Fatalf("SOCKS5 auth status = %d, want 0", got)
+	}
+	writeSOCKS5ConnectRequest(t, conn, targetAddr)
+	if got := readSOCKS5ConnectStatus(t, conn); got != 0x00 {
+		t.Fatalf("SOCKS5 connect status = %d", got)
+	}
+
+	fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", path, targetAddr)
+	return readHTTPResponseBody(t, bufio.NewReader(conn))
+}
+
+func socks5SelectedMethod(t *testing.T, proxyAddr string, methods []byte) byte {
+	t.Helper()
+	if len(methods) > 255 {
+		t.Fatalf("too many SOCKS5 methods: %d", len(methods))
+	}
+	conn, err := net.DialTimeout("tcp", proxyAddr, 3*time.Second)
+	if err != nil {
+		t.Fatalf("dial SOCKS5 proxy: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(integrationIOTimeout)); err != nil {
+		t.Fatalf("set SOCKS5 deadline: %v", err)
+	}
+
+	greeting := append([]byte{0x05, byte(len(methods))}, methods...)
+	if _, err := conn.Write(greeting); err != nil {
+		t.Fatalf("write SOCKS5 greeting: %v", err)
+	}
+	resp := make([]byte, 2)
+	if _, err := io.ReadFull(conn, resp); err != nil {
+		t.Fatalf("read SOCKS5 method selection: %v", err)
+	}
+	if resp[0] != 0x05 {
+		t.Fatalf("SOCKS5 method response version = %d, want 5", resp[0])
+	}
+	return resp[1]
+}
+
+func socks5UserPassAuthStatus(t *testing.T, proxyAddr, username, password string) byte {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", proxyAddr, 3*time.Second)
+	if err != nil {
+		t.Fatalf("dial SOCKS5 proxy: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(integrationIOTimeout)); err != nil {
+		t.Fatalf("set SOCKS5 deadline: %v", err)
+	}
+	return socks5UserPassAuthStatusConn(t, conn, username, password)
+}
+
+func socks5UserPassAuthStatusConn(t *testing.T, conn net.Conn, username, password string) byte {
+	t.Helper()
+	if len(username) > 255 || len(password) > 255 {
+		t.Fatalf("SOCKS5 username/password too long")
+	}
+	if _, err := conn.Write([]byte{0x05, 0x01, 0x02}); err != nil {
+		t.Fatalf("write SOCKS5 auth greeting: %v", err)
+	}
+	greeting := make([]byte, 2)
+	if _, err := io.ReadFull(conn, greeting); err != nil {
+		t.Fatalf("read SOCKS5 auth greeting: %v", err)
+	}
+	if !bytes.Equal(greeting, []byte{0x05, 0x02}) {
+		t.Fatalf("SOCKS5 auth greeting = %v", greeting)
+	}
+
+	req := []byte{0x01, byte(len(username))}
+	req = append(req, []byte(username)...)
+	req = append(req, byte(len(password)))
+	req = append(req, []byte(password)...)
+	if _, err := conn.Write(req); err != nil {
+		t.Fatalf("write SOCKS5 auth request: %v", err)
+	}
+	resp := make([]byte, 2)
+	if _, err := io.ReadFull(conn, resp); err != nil {
+		t.Fatalf("read SOCKS5 auth status: %v", err)
+	}
+	if resp[0] != 0x01 {
+		t.Fatalf("SOCKS5 auth status version = %d, want 1", resp[0])
+	}
+	return resp[1]
 }
 
 func socks5ConnectReplyCode(t *testing.T, proxyAddr, targetAddr string) byte {
@@ -631,6 +811,12 @@ func socks5ConnectReplyCode(t *testing.T, proxyAddr, targetAddr string) byte {
 		t.Fatalf("SOCKS5 greeting = %v", greeting)
 	}
 
+	writeSOCKS5ConnectRequest(t, conn, targetAddr)
+	return readSOCKS5ConnectStatus(t, conn)
+}
+
+func writeSOCKS5ConnectRequest(t *testing.T, conn net.Conn, targetAddr string) {
+	t.Helper()
 	host, portStr, err := net.SplitHostPort(targetAddr)
 	if err != nil {
 		t.Fatalf("split target addr: %v", err)
@@ -656,8 +842,12 @@ func socks5ConnectReplyCode(t *testing.T, proxyAddr, targetAddr string) byte {
 	if _, err := conn.Write(req); err != nil {
 		t.Fatalf("write SOCKS5 connect: %v", err)
 	}
+}
+
+func readSOCKS5ConnectStatus(t *testing.T, r io.Reader) byte {
+	t.Helper()
 	resp := make([]byte, 10)
-	if _, err := io.ReadFull(conn, resp); err != nil {
+	if _, err := io.ReadFull(r, resp); err != nil {
 		t.Fatalf("read SOCKS5 connect response: %v", err)
 	}
 	return resp[1]

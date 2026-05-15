@@ -715,3 +715,19 @@ Verification:
 - `go test -race ./...`: pass.
 - `go test ./...`: pass.
 - `go test -cover ./...`: pass, `coverage: 38.6% of statements`.
+
+Post Phase 8 local proxy auth integration:
+
+- [x] Add integration helpers for authenticated HTTP proxy requests, HTTP CONNECT, and SOCKS5 username/password handshakes.
+- [x] Assert local HTTP proxy auth rejects missing and wrong credentials.
+- [x] Assert local SOCKS5 auth rejects missing and wrong credentials.
+- [x] Assert correct HTTP and SOCKS5 credentials can fetch through a real WS tunnel.
+- [x] Ensure HTTP proxy auth headers are not forwarded to the origin server.
+- [x] Run focused/full/coverage verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run TestIntegrationLocalProxyAuth -count=1 ./...`: pass.
+- `go test ./...`: pass.
+- `go test -cover ./...`: pass, `coverage: 39.0% of statements`.
