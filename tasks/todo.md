@@ -578,6 +578,6 @@ Post Phase 8 source CIDR startup validation:
 
 Verification:
 
-- `go test -run 'Test(ParseSourceCIDRs|ValidateStartupConfig|ExampleConfigFilesLoad|IntegrationSourceCIDRRejectionMetrics)' -count=1 ./...`: pass.
+- `go test -run 'Test(ParseSourceCIDRs|ValidateStartupConfig|IntegrationSourceCIDRRejectionMetrics)' -count=1 ./...`: pass.
 - `go test ./...`: pass.
-- `go test -cover ./...`: pass, `coverage: 34.5% of statements`.
+- `go test -cover ./...`: pass, `coverage: 34.6% of statements`.
