@@ -2657,6 +2657,8 @@ func handleSmuxStream(session *ClientSession, ch *WSChannel, stream *smux.Stream
 	}
 	switch kind {
 	case streamKindHello:
+		_ = stream.SetDeadline(time.Now().Add(cfg.RTTProbeTimeout))
+		defer stream.SetDeadline(time.Time{})
 		clientHello, err := readProtocolHello(stream)
 		if err != nil {
 			atomic.AddUint64(&serverProtocolFailureSeq, 1)

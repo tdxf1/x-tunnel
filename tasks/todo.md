@@ -688,6 +688,20 @@ Verification:
 - `go test ./...`: pass.
 - `go test -cover ./...`: pass, `coverage: 38.7% of statements`.
 
+Post Phase 8 server hello deadline:
+
+- [x] Set a read/write deadline while handling protocol hello streams on the server.
+- [x] Clear the hello stream deadline after the negotiation branch finishes.
+- [x] Add a half-open hello stream unit test that verifies the handler returns and increments failure metrics.
+- [x] Run focused/full/coverage verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'TestHandleSmuxStreamHelloDeadline|TestHandleSmuxStreamRejectsUnsupportedKind|Test(ReadProtocolHelloMalformed|NegotiateProtocolHello)' -count=1 ./...`: pass.
+- `go test ./...`: pass.
+- `go test -cover ./...`: pass, `coverage: 39.0% of statements`.
+
 Post Phase 8 SOCKS5 UDP header strict validation:
 
 - [x] Require SOCKS5 UDP request packets to have zero RSV and FRAG fields.
