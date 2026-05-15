@@ -124,6 +124,104 @@ func TestReadSmuxOpenHeaderMalformed(t *testing.T) {
 	}
 }
 
+func TestProtocolConstants(t *testing.T) {
+	if protocolVersion != 1 {
+		t.Fatalf("protocolVersion = %d, want 1", protocolVersion)
+	}
+	if protocolStatusOK != 0 {
+		t.Fatalf("protocolStatusOK = %d, want 0", protocolStatusOK)
+	}
+}
+
+func TestProtocolHelloRoundTrip(t *testing.T) {
+	if protocolStatusOK != 0 {
+		t.Fatalf("protocolStatusOK = %d, want 0", protocolStatusOK)
+	}
+
+	var buf bytes.Buffer
+	want := ProtocolHello{
+		Version:      protocolVersion,
+		Status:       protocolStatusOK,
+		Capabilities: protocolCapabilityTCP | protocolCapabilityPing,
+		Message:      "ok",
+	}
+	if err := writeProtocolHello(&buf, want); err != nil {
+		t.Fatalf("writeProtocolHello returned error: %v", err)
+	}
+
+	got, err := readProtocolHello(&buf)
+	if err != nil {
+		t.Fatalf("readProtocolHello returned error: %v", err)
+	}
+	if got != want {
+		t.Fatalf("readProtocolHello = %#v, want %#v", got, want)
+	}
+}
+
+func TestProtocolHelloRejectsOversizedMessage(t *testing.T) {
+	err := writeProtocolHello(io.Discard, ProtocolHello{Message: strings.Repeat("x", 65536)})
+	if err == nil {
+		t.Fatal("writeProtocolHello accepted oversized message")
+	}
+}
+
+func TestReadProtocolHelloMalformed(t *testing.T) {
+	if _, err := readProtocolHello(bytes.NewReader([]byte("bad"))); err == nil {
+		t.Fatal("readProtocolHello accepted short frame")
+	}
+
+	raw := make([]byte, 12)
+	copy(raw[0:4], []byte("NOPE"))
+	if _, err := readProtocolHello(bytes.NewReader(raw)); err == nil {
+		t.Fatal("readProtocolHello accepted bad magic")
+	}
+
+	raw = make([]byte, 12)
+	copy(raw[0:4], []byte(protocolHelloMagic))
+	raw[6], raw[7] = 0, 5
+	raw = append(raw, 'x')
+	if _, err := readProtocolHello(bytes.NewReader(raw)); err == nil {
+		t.Fatal("readProtocolHello accepted truncated message")
+	}
+}
+
+func TestNegotiateProtocolHello(t *testing.T) {
+	ok := negotiateProtocolHello(ProtocolHello{
+		Version:      protocolVersion,
+		Capabilities: currentProtocolCapabilities(),
+	})
+	if ok.Status != protocolStatusOK {
+		t.Fatalf("negotiateProtocolHello status = %d, want OK", ok.Status)
+	}
+	if ok.Capabilities != currentProtocolCapabilities() {
+		t.Fatalf("negotiateProtocolHello caps = 0x%x, want 0x%x", ok.Capabilities, currentProtocolCapabilities())
+	}
+
+	unsupported := negotiateProtocolHello(ProtocolHello{
+		Version:      protocolVersion + 1,
+		Capabilities: currentProtocolCapabilities(),
+	})
+	if unsupported.Status != protocolStatusUnsupportedVersion {
+		t.Fatalf("unsupported version status = %d", unsupported.Status)
+	}
+
+	noCommon := negotiateProtocolHello(ProtocolHello{
+		Version:      protocolVersion,
+		Capabilities: 1 << 31,
+	})
+	if noCommon.Status != protocolStatusNoCommonCapabilities {
+		t.Fatalf("no common capability status = %d", noCommon.Status)
+	}
+
+	missingRequired := negotiateProtocolHello(ProtocolHello{
+		Version:      protocolVersion,
+		Capabilities: protocolCapabilityUDP,
+	})
+	if missingRequired.Status != protocolStatusNoCommonCapabilities {
+		t.Fatalf("missing required capability status = %d", missingRequired.Status)
+	}
+}
+
 func TestChunkRoundTrip(t *testing.T) {
 	var buf bytes.Buffer
 	payload := []byte("hello")

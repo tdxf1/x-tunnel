@@ -404,10 +404,119 @@ func (c *wsNetConn) SetReadDeadline(t time.Time) error { return c.ws.SetReadDead
 func (c *wsNetConn) SetWriteDeadline(t time.Time) error { return c.ws.SetWriteDeadline(t) }
 
 const (
-	streamKindTCP  byte = 1
-	streamKindUDP  byte = 2
-	streamKindPing byte = 3
+	streamKindTCP   byte = 1
+	streamKindUDP   byte = 2
+	streamKindPing  byte = 3
+	streamKindHello byte = 4
 )
+
+const (
+	protocolVersion byte = 1
+)
+
+const (
+	protocolStatusOK byte = iota
+	protocolStatusUnsupportedVersion
+	protocolStatusNoCommonCapabilities
+)
+
+const (
+	protocolCapabilityTCP uint32 = 1 << iota
+	protocolCapabilityUDP
+	protocolCapabilityPing
+	protocolCapabilityIPStrategy
+)
+
+const protocolHelloMagic = "XTUN"
+
+type ProtocolHello struct {
+	Version      byte
+	Status       byte
+	Capabilities uint32
+	Message      string
+}
+
+func currentProtocolCapabilities() uint32 {
+	return protocolCapabilityTCP |
+		protocolCapabilityUDP |
+		protocolCapabilityPing |
+		protocolCapabilityIPStrategy
+}
+
+func currentProtocolHello() ProtocolHello {
+	return ProtocolHello{
+		Version:      protocolVersion,
+		Status:       protocolStatusOK,
+		Capabilities: currentProtocolCapabilities(),
+	}
+}
+
+func writeProtocolHello(w io.Writer, hello ProtocolHello) error {
+	if len(hello.Message) > 65535 {
+		return fmt.Errorf("协议消息过长")
+	}
+	head := make([]byte, 12)
+	copy(head[0:4], []byte(protocolHelloMagic))
+	head[4] = hello.Version
+	head[5] = hello.Status
+	binary.BigEndian.PutUint16(head[6:8], uint16(len(hello.Message)))
+	binary.BigEndian.PutUint32(head[8:12], hello.Capabilities)
+	if _, err := w.Write(head); err != nil {
+		return err
+	}
+	if hello.Message == "" {
+		return nil
+	}
+	_, err := w.Write([]byte(hello.Message))
+	return err
+}
+
+func readProtocolHello(r io.Reader) (ProtocolHello, error) {
+	head := make([]byte, 12)
+	if _, err := io.ReadFull(r, head); err != nil {
+		return ProtocolHello{}, err
+	}
+	if string(head[0:4]) != protocolHelloMagic {
+		return ProtocolHello{}, fmt.Errorf("协议魔数无效")
+	}
+	msgLen := int(binary.BigEndian.Uint16(head[6:8]))
+	message := make([]byte, msgLen)
+	if msgLen > 0 {
+		if _, err := io.ReadFull(r, message); err != nil {
+			return ProtocolHello{}, err
+		}
+	}
+	return ProtocolHello{
+		Version:      head[4],
+		Status:       head[5],
+		Message:      string(message),
+		Capabilities: binary.BigEndian.Uint32(head[8:12]),
+	}, nil
+}
+
+func negotiateProtocolHello(clientHello ProtocolHello) ProtocolHello {
+	if clientHello.Version != protocolVersion {
+		return ProtocolHello{
+			Version: protocolVersion,
+			Status:  protocolStatusUnsupportedVersion,
+			Message: fmt.Sprintf("unsupported protocol version %d", clientHello.Version),
+		}
+	}
+	caps := clientHello.Capabilities & currentProtocolCapabilities()
+	required := protocolCapabilityTCP | protocolCapabilityPing
+	if caps&required != required {
+		return ProtocolHello{
+			Version: protocolVersion,
+			Status:  protocolStatusNoCommonCapabilities,
+			Message: "missing required protocol capabilities",
+		}
+	}
+	return ProtocolHello{
+		Version:      protocolVersion,
+		Status:       protocolStatusOK,
+		Capabilities: caps,
+	}
+}
 
 // ======================== SOCKS5 辅助函数 ========================
 
@@ -1445,6 +1554,22 @@ func handleSmuxStream(session *ClientSession, ch *WSChannel, stream *smux.Stream
 		return
 	}
 	switch kind {
+	case streamKindHello:
+		clientHello, err := readProtocolHello(stream)
+		if err != nil {
+			log.Printf("[服务端] 客户ID:%s 协议协商读取失败: %v, 通道:%d", shortID(session.clientID), err, ch.id)
+			return
+		}
+		response := negotiateProtocolHello(clientHello)
+		if err := writeProtocolHello(stream, response); err != nil {
+			log.Printf("[服务端] 客户ID:%s 协议协商响应失败: %v, 通道:%d", shortID(session.clientID), err, ch.id)
+			return
+		}
+		if response.Status != protocolStatusOK {
+			log.Printf("[服务端] 客户ID:%s 协议协商拒绝: %s, 通道:%d", shortID(session.clientID), response.Message, ch.id)
+			return
+		}
+		log.Printf("[服务端] 客户ID:%s 协议协商成功: version=%d caps=0x%x, 通道:%d", shortID(session.clientID), response.Version, response.Capabilities, ch.id)
 	case streamKindPing:
 		payload := make([]byte, 8)
 		if _, err := io.ReadFull(stream, payload); err != nil {
@@ -1593,6 +1718,19 @@ func (p *ECHPool) dialAndServe(idx int, ip string) {
 			time.Sleep(cfg.ReconnectDelay)
 			continue
 		}
+		legacyProtocol, err := negotiateClientProtocol(sess, cfg.RTTProbeTimeout)
+		if err != nil {
+			_ = sess.Close()
+			_ = wsConn.Close()
+			log.Printf("[客户端] 通道 %d (IP:%s) 协议协商失败: %v", chID, ipLabel, err)
+			time.Sleep(cfg.ReconnectDelay)
+			continue
+		}
+		if legacyProtocol {
+			log.Printf("[客户端] 通道 %d (IP:%s) 使用旧协议模式（服务端未响应 hello）", chID, ipLabel)
+		} else {
+			log.Printf("[客户端] 通道 %d (IP:%s) 协议协商成功: version=%d caps=0x%x", chID, ipLabel, protocolVersion, currentProtocolCapabilities())
+		}
 		p.wsConnsMu.Lock()
 		p.smuxConns[idx] = sess
 		p.channelRTT[idx] = 0
@@ -1679,6 +1817,52 @@ func (p *ECHPool) probeChannelRTTOnce(sess *smux.Session, timeout time.Duration)
 		return 0, fmt.Errorf("ping ack mismatch")
 	}
 	return time.Since(start).Nanoseconds(), nil
+}
+
+func negotiateClientProtocol(sess *smux.Session, timeout time.Duration) (bool, error) {
+	s, err := sess.OpenStream()
+	if err != nil {
+		return false, err
+	}
+	defer s.Close()
+	_ = s.SetDeadline(time.Now().Add(timeout))
+	if err := writeSmuxOpenHeader(s, streamKindHello, IPStrategyDefault, ""); err != nil {
+		return false, err
+	}
+	if err := writeProtocolHello(s, currentProtocolHello()); err != nil {
+		return false, err
+	}
+	response, err := readProtocolHello(s)
+	if err != nil {
+		if isLegacyProtocolHelloError(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	if response.Status != protocolStatusOK {
+		if response.Message != "" {
+			return false, fmt.Errorf("协议协商失败: %s", response.Message)
+		}
+		return false, fmt.Errorf("协议协商失败: status=%d", response.Status)
+	}
+	if response.Version != protocolVersion {
+		return false, fmt.Errorf("协议版本不匹配: %d", response.Version)
+	}
+	required := protocolCapabilityTCP | protocolCapabilityPing
+	if response.Capabilities&required != required {
+		return false, fmt.Errorf("协议能力不足: caps=0x%x", response.Capabilities)
+	}
+	return false, nil
+}
+
+func isLegacyProtocolHelloError(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		return true
+	}
+	return false
 }
 
 func shortID(id string) string {

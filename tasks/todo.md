@@ -46,15 +46,15 @@ Verification:
 
 ### Phase 3: Protocol Evolution Foundation, 07:00-09:30
 
-- [ ] Add a versioned client/server hello on each smux session or stream without breaking current data paths.
-- [ ] Define capability flags for TCP, UDP, ping, IP strategy, and future compression/metrics.
-- [ ] Fail cleanly on unsupported versions/capabilities.
-- [ ] Keep compatibility path for existing behavior if possible; otherwise document the breaking point clearly.
+- [x] Add a versioned client/server hello on each smux session or stream without breaking current data paths.
+- [x] Define capability flags for TCP, UDP, ping, IP strategy, and future compression/metrics.
+- [x] Fail cleanly on unsupported versions/capabilities.
+- [x] Keep compatibility path for existing behavior if possible; otherwise document the breaking point clearly.
 
 Verification:
 
-- [ ] Unit tests for supported and unsupported version negotiation.
-- [ ] Local WS server/client tunnel smoke test.
+- [x] Unit tests for supported and unsupported version negotiation.
+- [x] Local WS server/client tunnel smoke test.
 
 ### Phase 4: Reliability and Lifecycle, 09:30-12:00
 
@@ -151,4 +151,16 @@ Phase 2:
 - Verified with `go test ./...`: pass.
 - Verified with `go test -cover ./...`: pass, `coverage: 10.0% of statements`.
 
-Pending for later phases: protocol negotiation, reliability/security changes, integration smoke tests, and final review.
+Phase 3:
+
+- Added `streamKindHello` protocol negotiation over a smux control stream.
+- Added protocol version `1`, status codes, and capability flags for TCP, UDP, Ping, and IPStrategy.
+- New clients fail explicit unsupported-version/capability responses and fall back to legacy mode only when the peer does not answer the hello stream.
+- Updated `docs/protocol.md` with the hello frame format.
+- Verified with `go test ./...`: pass.
+- Verified with `go test -cover ./...`: pass, `coverage: 11.5% of statements`.
+- Verified local WS smoke test with server `ws://127.0.0.1:18081/tunnel`, client SOCKS5 `127.0.0.1:11081`, TCP forward `127.0.0.1:12001`, and local HTTP target `127.0.0.1:19091`.
+- Smoke result: `phase3_smoke=pass hash=8f099f7578ffd733cbd2dbb20acd572448feefd2c104c887253829aa302223f7 socks_size=66737 tcp_size=66737`.
+- Negotiation evidence: client and server logs both contained `协议协商成功`, `version=1`, and `caps=0xf`.
+
+Pending for later phases: reliability/security changes, integration smoke tests, and final review.

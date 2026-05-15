@@ -57,6 +57,8 @@ The server groups channels by `client_id`. If a channel connects with an existin
 
 Each WebSocket channel carries one smux session.
 
+On new builds, the client opens one hello control stream immediately after smux session creation. If the server responds, the session has explicit version and capability negotiation. If an old server closes or times out the hello stream, the client logs legacy mode and keeps the existing data path available.
+
 ## 4. smux Stream Open Header
 
 Every new smux stream starts with a fixed 4-byte header followed by an optional target string:
@@ -84,6 +86,7 @@ Stream kinds:
 | `1` | TCP | Open a TCP proxy stream to `target`. |
 | `2` | UDP | Open a UDP relay stream to `target`. |
 | `3` | Ping | Echo an 8-byte ping payload. |
+| `4` | Hello | Negotiate protocol version and capabilities for the smux session. |
 
 IP strategies:
 
@@ -98,10 +101,59 @@ IP strategies:
 Limits:
 
 - `target_len <= 65535`.
-- There is no protocol version byte in the current header.
-- Unknown stream kinds are ignored by falling through the server switch.
+- The current TCP/UDP/Ping stream open header remains unchanged for compatibility.
+- Unknown stream kinds should be treated as unsupported in future protocol versions.
 
-## 5. TCP Stream
+## 5. Protocol Hello Stream
+
+The hello stream uses `streamKindHello` (`4`) with an empty target in the existing smux open header. After that header, the client writes a protocol hello frame:
+
+```text
+0                   1                   2                   3
++-------------------+-------------------+-------------------+
+| magic "XTUN"                                          |
++-------------------+-------------------+-------------------+
+| version           | status            | msg_len (BE16)    |
++-------------------+-------------------+-------------------+
+| capabilities (BE32)                                  |
++-------------------------------------------------------+
+| message bytes ...                                    |
++-------------------------------------------------------+
+```
+
+Fields:
+
+- `magic`: fixed ASCII string `XTUN`.
+- `version`: current protocol version, currently `1`.
+- `status`: `0` for OK, non-zero for rejection responses.
+- `msg_len`: big-endian uint16 message length.
+- `capabilities`: big-endian uint32 capability flags.
+- `message`: optional UTF-8 diagnostic message.
+
+Status values:
+
+| Value | Name | Meaning |
+| --- | --- | --- |
+| `0` | OK | Version/capabilities accepted. |
+| `1` | UnsupportedVersion | Peer does not support the requested version. |
+| `2` | NoCommonCapabilities | Peer is missing required capabilities for this protocol version. |
+
+Capability flags:
+
+| Bit | Name | Meaning |
+| --- | --- | --- |
+| `1 << 0` | TCP | TCP streams are supported. |
+| `1 << 1` | UDP | UDP streams are supported. |
+| `1 << 2` | Ping | Ping streams are supported. |
+| `1 << 3` | IPStrategy | IP strategy byte is understood. |
+
+Current client behavior:
+
+- Requires negotiated TCP and Ping capabilities.
+- Treats EOF, unexpected EOF, or timeout while waiting for hello as legacy server behavior.
+- Fails the channel cleanly on explicit rejection or insufficient capabilities.
+
+## 6. TCP Stream
 
 After a TCP stream open header, both sides proxy raw bytes until either direction exits. The implementation then closes both the target connection and the smux stream.
 
@@ -111,7 +163,7 @@ Current behavior:
 - The local SOCKS5 CONNECT response is sent before the remote TCP stream is opened.
 - The HTTP CONNECT response is sent before the remote TCP stream is opened.
 
-## 6. Ping Stream
+## 7. Ping Stream
 
 A ping stream has:
 
@@ -122,7 +174,7 @@ stream open header(kind=3, ip_strategy=0, target="")
 
 The server echoes the exact 8-byte payload. The client measures RTT around write/read completion.
 
-## 7. UDP Stream
+## 8. UDP Stream
 
 A UDP stream is opened for one current target. Client-to-server datagrams are sent as chunks:
 
@@ -158,7 +210,7 @@ Limits:
 - `addr_len <= 65535`.
 - `payload_len <= 65535`.
 
-## 8. SOCKS5 UDP Packet Format
+## 9. SOCKS5 UDP Packet Format
 
 The local SOCKS5 UDP association accepts standard SOCKS5 UDP request packets:
 
@@ -173,13 +225,13 @@ Current behavior:
 - IPv6 targets are formatted as `[host]:port` after parsing.
 - UDP destination ports listed in `-block` are silently dropped.
 
-## 9. Current Risk Map
+## 10. Current Risk Map
 
 ### Compatibility Risks
 
-- No protocol version negotiation exists, so changing the stream open header would break existing clients and servers.
-- No capability flags exist, so optional features such as compression, metrics, stronger auth, or status replies cannot be safely negotiated.
-- Unknown stream kinds are not explicitly rejected, which makes interoperability failures hard to diagnose.
+- Protocol version/capability negotiation now exists on a hello control stream, but TCP/UDP/Ping stream headers are still unversioned for compatibility.
+- Optional future features such as compression, metrics, stronger auth, or status replies must be gated behind capability flags.
+- Unknown stream kinds still need stronger explicit rejection behavior in a future revision.
 
 ### Reliability Risks
 
@@ -196,11 +248,11 @@ Current behavior:
 
 ### Testability Risks
 
-- The project currently has no automated tests.
-- Protocol encoders/decoders are embedded in the main file but can be unit-tested before refactoring.
+- The project now has unit coverage for protocol helpers, but broad network paths still need integration tests.
+- Protocol encoders/decoders are embedded in the main file and can be extracted once coverage is stronger.
 - Local smoke tests exist only as documented manual commands, not as automated integration tests.
 
-## 10. Evolution Rules
+## 11. Evolution Rules
 
 - Do not change existing wire bytes until unit tests cover current encoders/decoders.
 - Add negotiation before introducing incompatible stream framing.
