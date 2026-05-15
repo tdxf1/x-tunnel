@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -132,6 +134,57 @@ func TestWriteMetrics(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("metrics output missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestLoadConfigFileAppliesUnsetFlags(t *testing.T) {
+	oldListen, oldForward, oldToken := listenAddr, forwardAddr, token
+	oldMetrics, oldConnectionNum := metricsAddr, connectionNum
+	defer func() {
+		listenAddr, forwardAddr, token = oldListen, oldForward, oldToken
+		metricsAddr, connectionNum = oldMetrics, oldConnectionNum
+	}()
+	listenAddr, forwardAddr, token, metricsAddr = "", "", "", ""
+	connectionNum = 3
+
+	path := filepath.Join(t.TempDir(), "config.json")
+	raw := `{
+		"listen": "socks5://127.0.0.1:11080",
+		"forward": "ws://127.0.0.1:18080/tunnel",
+		"token": "config-token",
+		"metrics": "127.0.0.1:19099",
+		"connections": 2
+	}`
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadConfigFile(path, map[string]bool{"token": true}); err != nil {
+		t.Fatalf("loadConfigFile returned error: %v", err)
+	}
+	if listenAddr != "socks5://127.0.0.1:11080" {
+		t.Fatalf("listenAddr = %q", listenAddr)
+	}
+	if forwardAddr != "ws://127.0.0.1:18080/tunnel" {
+		t.Fatalf("forwardAddr = %q", forwardAddr)
+	}
+	if token != "" {
+		t.Fatalf("token should not be overridden by config when flag is seen, got %q", token)
+	}
+	if metricsAddr != "127.0.0.1:19099" {
+		t.Fatalf("metricsAddr = %q", metricsAddr)
+	}
+	if connectionNum != 2 {
+		t.Fatalf("connectionNum = %d, want 2", connectionNum)
+	}
+}
+
+func TestLoadConfigFileRejectsUnknownFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"unknown": true}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadConfigFile(path, nil); err == nil {
+		t.Fatal("loadConfigFile accepted unknown field")
 	}
 }
 

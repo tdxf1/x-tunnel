@@ -83,6 +83,24 @@ Expose lightweight Prometheus-style counters with `-metrics`:
 curl http://127.0.0.1:9090/metrics
 ```
 
+## Config File
+
+Use `-config` with JSON when command lines get long. Explicit flags override config file values.
+
+```json
+{
+  "listen": "socks5://127.0.0.1:11080",
+  "forward": "ws://127.0.0.1:18080/tunnel",
+  "token": "local-test-token",
+  "connections": 1,
+  "metrics": "127.0.0.1:9090"
+}
+```
+
+```bash
+./x-tunnel -config ./client.json
+```
+
 ## Troubleshooting
 
 - `认证失败：Token 不匹配或未提供`: client and server `-token` values differ, or the token contains characters that are not valid WebSocket subprotocol token characters.

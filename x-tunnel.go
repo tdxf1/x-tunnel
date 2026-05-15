@@ -11,6 +11,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"flag"
@@ -134,6 +135,7 @@ var (
 	udpBlockPortsStr string
 	certFile         string
 	keyFile          string
+	configFile       string
 	token            string
 	showVersion      bool
 	metricsAddr      string
@@ -192,6 +194,7 @@ type TargetPolicy struct {
 }
 
 func init() {
+	flag.StringVar(&configFile, "config", "", "可选 JSON 配置文件路径；显式命令行参数优先")
 	flag.StringVar(&listenAddr, "l", "", "监听地址 (支持多个，用逗号分隔)\n格式示例:\n  socks5://[user:pass@]0.0.0.0:1080\n  http://[user:pass@]0.0.0.0:8080\n  tcp://0.0.0.0:2000/1.2.3.4:22\n  ws://0.0.0.0:80/path (服务端模式)\n  wss://0.0.0.0:443/path (服务端模式)")
 	flag.StringVar(&forwardAddr, "f", "", "服务地址/代理地址 (客户端模式: ws://host:port 或 wss://host:port | 服务端模式: socks5://[user:pass@]host:port)")
 	flag.StringVar(&ipAddr, "ip", "", "指定解析的IP地址（仅客户端：将 ws/wss 主机名定向到该 IP 连接，多个IP用逗号分隔）")
@@ -214,6 +217,77 @@ func init() {
 
 func versionString() string {
 	return fmt.Sprintf("x-tunnel version=%s commit=%s build=%s", buildVersion, buildCommit, buildDate)
+}
+
+type FileConfig struct {
+	Listen      *string `json:"listen"`
+	Forward     *string `json:"forward"`
+	IP          *string `json:"ip"`
+	Block       *string `json:"block"`
+	Cert        *string `json:"cert"`
+	Key         *string `json:"key"`
+	Token       *string `json:"token"`
+	Metrics     *string `json:"metrics"`
+	CIDR        *string `json:"cidr"`
+	AllowTarget *string `json:"allow_target"`
+	DenyTarget  *string `json:"deny_target"`
+	DNS         *string `json:"dns"`
+	ECH         *string `json:"ech"`
+	IPS         *string `json:"ips"`
+	Connections *int    `json:"connections"`
+	Insecure    *bool   `json:"insecure"`
+	Fallback    *bool   `json:"fallback"`
+}
+
+func visitedFlags() map[string]bool {
+	seen := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) {
+		seen[f.Name] = true
+	})
+	return seen
+}
+
+func loadConfigFile(path string, seen map[string]bool) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var fc FileConfig
+	if err := dec.Decode(&fc); err != nil {
+		return err
+	}
+	applyStringConfig(seen, "l", fc.Listen, &listenAddr)
+	applyStringConfig(seen, "f", fc.Forward, &forwardAddr)
+	applyStringConfig(seen, "ip", fc.IP, &ipAddr)
+	applyStringConfig(seen, "block", fc.Block, &udpBlockPortsStr)
+	applyStringConfig(seen, "cert", fc.Cert, &certFile)
+	applyStringConfig(seen, "key", fc.Key, &keyFile)
+	applyStringConfig(seen, "token", fc.Token, &token)
+	applyStringConfig(seen, "metrics", fc.Metrics, &metricsAddr)
+	applyStringConfig(seen, "cidr", fc.CIDR, &cidrs)
+	applyStringConfig(seen, "allow-target", fc.AllowTarget, &targetAllowCIDRs)
+	applyStringConfig(seen, "deny-target", fc.DenyTarget, &targetDenyCIDRs)
+	applyStringConfig(seen, "dns", fc.DNS, &dnsServer)
+	applyStringConfig(seen, "ech", fc.ECH, &echDomain)
+	applyStringConfig(seen, "ips", fc.IPS, &ips)
+	if fc.Connections != nil && !seen["n"] {
+		connectionNum = *fc.Connections
+	}
+	if fc.Insecure != nil && !seen["insecure"] {
+		insecure = *fc.Insecure
+	}
+	if fc.Fallback != nil && !seen["fallback"] {
+		fallback = *fc.Fallback
+	}
+	return nil
+}
+
+func applyStringConfig(seen map[string]bool, flagName string, value *string, target *string) {
+	if value != nil && !seen[flagName] {
+		*target = *value
+	}
 }
 
 func splitCommaList(raw string) []string {
@@ -320,6 +394,11 @@ func main() {
 	if showVersion {
 		fmt.Println(versionString())
 		return
+	}
+	if configFile != "" {
+		if err := loadConfigFile(configFile, visitedFlags()); err != nil {
+			log.Fatalf("[配置] 读取配置文件失败: %v", err)
+		}
 	}
 	if listenAddr == "" {
 		flag.Usage()

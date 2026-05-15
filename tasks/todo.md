@@ -131,7 +131,7 @@ Verification:
 
 - QUIC/WebTransport transport option.
 - [x] Metrics endpoint or Prometheus counters.
-- Config file support.
+- [x] Config file support.
 - mTLS or stronger client authentication.
 - Benchmark suite and load testing.
 - Windows/Linux/macOS release packaging.
@@ -195,7 +195,7 @@ Phase 5:
 - Added `docs/deployment.md` covering token limits, source CIDR filtering, target filtering, TLS/ECH/`-insecure`, and recommended deployment commands.
 - Added unit tests for config validation and target policy behavior.
 - Verified with `go test ./...`: pass.
-- Verified with `go test -cover ./...`: pass, `coverage: 15.7% of statements`.
+- Verified with `go test -cover ./...`: pass, `coverage: 16.3% of statements`.
 - Verified wrong-token rejection with a real server/client: `phase5_unauthorized_token=pass`.
 - Wrong-token evidence: client logged `认证失败：Token 不匹配或未提供`; server logged `Token 认证失败，来源 IP: 127.0.0.1`.
 - Verified allowed target policy smoke with server `-allow-target 127.0.0.0/8`: `phase5_policy_smoke=pass hash=4eecc23f5206ec6b4e30afb974965f817b156ec67ae9ad17fe6dd76c443c28d0`.
@@ -252,27 +252,38 @@ Post Phase 8 backlog:
 - CI runs on push and pull request with Go `1.24.4`.
 - CI steps: module download, `go test ./...`, `go test -cover ./...`, and `go build -o x-tunnel .`.
 - Added `integration_test.go` to automate the local tunnel matrix inside `go test ./...`.
-- Integration test builds a temporary binary and covers WS server, SOCKS5 TCP, SOCKS5 UDP relay, TCP forward, HTTP proxy GET, HTTP CONNECT, and wrong-token rejection.
+- Integration test builds a temporary binary and covers WS server, metrics endpoint, SOCKS5 TCP, SOCKS5 UDP relay, TCP forward, HTTP proxy GET, HTTP CONNECT, and wrong-token rejection.
 - Verified with `go test ./...`: pass.
-- Verified with `go test -cover ./...`: pass, `coverage: 15.7% of statements`.
+- Verified with `go test -cover ./...`: pass, `coverage: 16.3% of statements`.
 - Added `integration_test.go`, which builds a temporary x-tunnel binary, starts a real local WS server/client pair, and verifies TCP forward plus HTTP proxy traffic against an `httptest` server.
 - Verified with `go test ./...`: pass, including integration test.
 - Verified with `go test -cover ./...`: pass, `coverage: 15.7% of statements`.
 - Added `scripts/build.sh` to inject `buildVersion`, `buildCommit`, and `buildDate` via `-ldflags`.
 - Documented the build script in `README.md`.
-- Verified build script with `OUT=/tmp/x-tunnel-build-check VERSION=0.1.0 COMMIT=testcommit BUILD_DATE=2026-05-16T00:00:00Z ./scripts/build.sh`.
+- Verified build script with `OUT=$(mktemp) VERSION=0.1.0 COMMIT=testcommit BUILD_DATE=2026-05-16T00:00:00Z ./scripts/build.sh`.
 - Verified generated binary output: `x-tunnel version=0.1.0 commit=testcommit build=2026-05-16T00:00:00Z`.
 - Added protocol helper benchmarks for smux open headers, chunks, and UDP replies.
 - Verified short benchmark run:
-  - `BenchmarkSmuxOpenHeaderRoundTrip-8`: `93.52 ns/op`
-  - `BenchmarkChunkRoundTrip-8`: `294.5 ns/op`
-  - `BenchmarkUDPReplyRoundTrip-8`: `331.6 ns/op`
+  - `BenchmarkSmuxOpenHeaderRoundTrip-8`: `93.25 ns/op`
+  - `BenchmarkChunkRoundTrip-8`: `292.3 ns/op`
+  - `BenchmarkUDPReplyRoundTrip-8`: `329.8 ns/op`
 
 Post Phase 8 metrics:
 
 - Added optional `-metrics` HTTP endpoint exposing Prometheus-style text at `/metrics`.
 - Metrics include server stream count, UDP association count, client reconnect count, and active server session count.
 - Documented `-metrics` in `README.md`.
+- Added unit coverage for metrics rendering and integration coverage for the `/metrics` endpoint.
 - Verified with `go test ./...`: pass.
 - Verified with `go test -cover ./...`: pass, `coverage: 16.3% of statements`.
 - Verified real metrics endpoint: `metrics_smoke=pass`, with all four metric names present.
+
+Post Phase 8 config:
+
+- Added `-config` JSON config support.
+- Explicit CLI flags override config file values.
+- Unknown config fields are rejected with `DisallowUnknownFields`.
+- Documented config usage in `README.md`.
+- Verified with `go test ./...`: pass.
+- Verified with `go test -cover ./...`: pass, `coverage: 17.5% of statements`.
+- Verified real config smoke: `config_smoke=pass hash=9ca571ad702f4922cc9f5d5a07bf231c53298b0bfea8a7e7fed8ef0ac23f2b56 tcp_size=77336`.
