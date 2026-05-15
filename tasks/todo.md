@@ -318,3 +318,13 @@ Post Phase 8 mTLS:
 - Verified `go run . -h` includes `-client-ca`, `-client-cert`, and `-client-key`.
 - Verified with `go test ./...`: pass.
 - Verified with `go test -cover ./...`: pass, `coverage: 19.0% of statements`.
+
+Post Phase 8 runtime tunables:
+
+- Added CLI duration flags for dial timeout, WebSocket handshake timeout, reconnect delay/max/jitter, RTT probe timeout, DNS timeout, ECH retry delay, UDP read timeout, and shutdown timeout.
+- Added matching JSON config keys such as `dial_timeout` and `reconnect_max_delay`.
+- Added config validation for positive durations and reconnect max-delay ordering.
+- Documented duration config examples in `README.md`.
+- Verified `go run . -h` includes `-dial-timeout` and `-reconnect-max-delay`.
+- Verified with `go test ./...`: pass.
+- Verified with `go test -cover ./...`: pass, `coverage: 20.7% of statements`.

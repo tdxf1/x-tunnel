@@ -122,6 +122,8 @@ Most keys mirror flag names; `-n` is `connections`, and target filter keys accep
   "allow-target": "10.0.0.0/8",
   "deny_target": "10.0.9.0/24",
   "connections": 1,
+  "dial_timeout": "5s",
+  "reconnect_max_delay": "30s",
   "metrics": "127.0.0.1:9090"
 }
 ```
@@ -129,6 +131,10 @@ Most keys mirror flag names; `-n` is `connections`, and target filter keys accep
 ```bash
 ./x-tunnel -config ./client.json
 ```
+
+Operational timeouts can be tuned with duration flags such as `-dial-timeout`,
+`-ws-handshake-timeout`, `-reconnect-delay`, and `-shutdown-timeout`. JSON config
+uses underscore keys, for example `"dial_timeout": "5s"`.
 
 ## Troubleshooting
 

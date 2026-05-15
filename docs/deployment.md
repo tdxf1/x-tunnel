@@ -45,6 +45,20 @@ Prefer `wss://` with a real certificate for exposed deployments.
 
 If ECH DNS lookup fails, the client keeps retrying until it can load an ECH config or until you explicitly use `-fallback`.
 
+## Runtime Timeouts
+
+Default timeouts are conservative for local and small remote deployments, but exposed deployments can tune them explicitly:
+
+- `-dial-timeout`: target TCP/DNS dialing timeout.
+- `-ws-handshake-timeout`: WebSocket handshake timeout.
+- `-reconnect-delay`, `-reconnect-max-delay`, `-reconnect-jitter`: client reconnect backoff. Set `-reconnect-jitter 0s` to disable jitter.
+- `-rtt-timeout`: channel RTT probe timeout.
+- `-dns-timeout` and `-ech-retry-delay`: ECH lookup timeout/retry behavior.
+- `-udp-read-timeout`: server UDP relay read polling timeout.
+- `-shutdown-timeout`: graceful HTTP server shutdown timeout.
+
+JSON config uses underscore keys such as `dial_timeout`, `ws_handshake_timeout`, and `shutdown_timeout`.
+
 ## mTLS Client Authentication
 
 For stronger client authentication, use `-client-ca` on the WSS server and `-client-cert` / `-client-key` on the client.

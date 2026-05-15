@@ -219,6 +219,16 @@ func init() {
 	flag.BoolVar(&fallback, "fallback", false, "是否禁用 ECH 并回落到普通 TLS 1.3（仅 wss 模式生效，默认 false）")
 	flag.IntVar(&connectionNum, "n", 3, "每个IP建立的WebSocket连接数量")
 	flag.StringVar(&ips, "ips", "", "服务端解析目标地址的IP偏好 (仅客户端有效)\n 4: 仅IPv4\n 6: 仅IPv6\n 4,6: IPv4优先\n 6,4: IPv6优先")
+	flag.DurationVar(&cfg.DialTimeout, "dial-timeout", cfg.DialTimeout, "TCP/DNS 目标拨号超时时间")
+	flag.DurationVar(&cfg.WSHandshakeTimeout, "ws-handshake-timeout", cfg.WSHandshakeTimeout, "WebSocket 握手超时时间")
+	flag.DurationVar(&cfg.ReconnectDelay, "reconnect-delay", cfg.ReconnectDelay, "客户端重连初始退避时间")
+	flag.DurationVar(&cfg.ReconnectMaxDelay, "reconnect-max-delay", cfg.ReconnectMaxDelay, "客户端重连最大退避时间")
+	flag.DurationVar(&cfg.ReconnectJitter, "reconnect-jitter", cfg.ReconnectJitter, "客户端重连随机抖动上限")
+	flag.DurationVar(&cfg.RTTProbeTimeout, "rtt-timeout", cfg.RTTProbeTimeout, "通道 RTT 探测超时时间")
+	flag.DurationVar(&cfg.DNSQueryTimeout, "dns-timeout", cfg.DNSQueryTimeout, "ECH DNS 查询超时时间")
+	flag.DurationVar(&cfg.ECHRetryDelay, "ech-retry-delay", cfg.ECHRetryDelay, "ECH 查询/刷新失败后的重试等待时间")
+	flag.DurationVar(&cfg.UDPReadTimeout, "udp-read-timeout", cfg.UDPReadTimeout, "服务端 UDP relay 读轮询超时时间")
+	flag.DurationVar(&cfg.ShutdownTimeout, "shutdown-timeout", cfg.ShutdownTimeout, "收到退出信号后的优雅关闭超时时间")
 }
 
 func versionString() string {
@@ -226,31 +236,41 @@ func versionString() string {
 }
 
 type FileConfig struct {
-	Listen          *string `json:"listen"`
-	Forward         *string `json:"forward"`
-	IP              *string `json:"ip"`
-	Block           *string `json:"block"`
-	Cert            *string `json:"cert"`
-	Key             *string `json:"key"`
-	ClientCA        *string `json:"client_ca"`
-	ClientCert      *string `json:"client_cert"`
-	ClientKey       *string `json:"client_key"`
-	ClientCAFlag    *string `json:"client-ca"`
-	ClientCertFlag  *string `json:"client-cert"`
-	ClientKeyFlag   *string `json:"client-key"`
-	Token           *string `json:"token"`
-	Metrics         *string `json:"metrics"`
-	CIDR            *string `json:"cidr"`
-	AllowTarget     *string `json:"allow_target"`
-	DenyTarget      *string `json:"deny_target"`
-	AllowTargetFlag *string `json:"allow-target"`
-	DenyTargetFlag  *string `json:"deny-target"`
-	DNS             *string `json:"dns"`
-	ECH             *string `json:"ech"`
-	IPS             *string `json:"ips"`
-	Connections     *int    `json:"connections"`
-	Insecure        *bool   `json:"insecure"`
-	Fallback        *bool   `json:"fallback"`
+	Listen             *string `json:"listen"`
+	Forward            *string `json:"forward"`
+	IP                 *string `json:"ip"`
+	Block              *string `json:"block"`
+	Cert               *string `json:"cert"`
+	Key                *string `json:"key"`
+	ClientCA           *string `json:"client_ca"`
+	ClientCert         *string `json:"client_cert"`
+	ClientKey          *string `json:"client_key"`
+	ClientCAFlag       *string `json:"client-ca"`
+	ClientCertFlag     *string `json:"client-cert"`
+	ClientKeyFlag      *string `json:"client-key"`
+	Token              *string `json:"token"`
+	Metrics            *string `json:"metrics"`
+	CIDR               *string `json:"cidr"`
+	AllowTarget        *string `json:"allow_target"`
+	DenyTarget         *string `json:"deny_target"`
+	AllowTargetFlag    *string `json:"allow-target"`
+	DenyTargetFlag     *string `json:"deny-target"`
+	DNS                *string `json:"dns"`
+	ECH                *string `json:"ech"`
+	IPS                *string `json:"ips"`
+	Connections        *int    `json:"connections"`
+	Insecure           *bool   `json:"insecure"`
+	Fallback           *bool   `json:"fallback"`
+	DialTimeout        *string `json:"dial_timeout"`
+	WSHandshakeTimeout *string `json:"ws_handshake_timeout"`
+	ReconnectDelay     *string `json:"reconnect_delay"`
+	ReconnectMaxDelay  *string `json:"reconnect_max_delay"`
+	ReconnectJitter    *string `json:"reconnect_jitter"`
+	RTTProbeTimeout    *string `json:"rtt_timeout"`
+	DNSQueryTimeout    *string `json:"dns_timeout"`
+	ECHRetryDelay      *string `json:"ech_retry_delay"`
+	UDPReadTimeout     *string `json:"udp_read_timeout"`
+	ShutdownTimeout    *string `json:"shutdown_timeout"`
 }
 
 func visitedFlags() map[string]bool {
@@ -325,6 +345,36 @@ func loadConfigFile(path string, seen map[string]bool) error {
 	if fc.Fallback != nil && !seen["fallback"] {
 		fallback = *fc.Fallback
 	}
+	if err := applyDurationConfig(seen, "dial-timeout", fc.DialTimeout, &cfg.DialTimeout); err != nil {
+		return err
+	}
+	if err := applyDurationConfig(seen, "ws-handshake-timeout", fc.WSHandshakeTimeout, &cfg.WSHandshakeTimeout); err != nil {
+		return err
+	}
+	if err := applyDurationConfig(seen, "reconnect-delay", fc.ReconnectDelay, &cfg.ReconnectDelay); err != nil {
+		return err
+	}
+	if err := applyDurationConfig(seen, "reconnect-max-delay", fc.ReconnectMaxDelay, &cfg.ReconnectMaxDelay); err != nil {
+		return err
+	}
+	if err := applyNonNegativeDurationConfig(seen, "reconnect-jitter", fc.ReconnectJitter, &cfg.ReconnectJitter); err != nil {
+		return err
+	}
+	if err := applyDurationConfig(seen, "rtt-timeout", fc.RTTProbeTimeout, &cfg.RTTProbeTimeout); err != nil {
+		return err
+	}
+	if err := applyDurationConfig(seen, "dns-timeout", fc.DNSQueryTimeout, &cfg.DNSQueryTimeout); err != nil {
+		return err
+	}
+	if err := applyDurationConfig(seen, "ech-retry-delay", fc.ECHRetryDelay, &cfg.ECHRetryDelay); err != nil {
+		return err
+	}
+	if err := applyDurationConfig(seen, "udp-read-timeout", fc.UDPReadTimeout, &cfg.UDPReadTimeout); err != nil {
+		return err
+	}
+	if err := applyDurationConfig(seen, "shutdown-timeout", fc.ShutdownTimeout, &cfg.ShutdownTimeout); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -344,12 +394,71 @@ func applyStringConfig(seen map[string]bool, flagName string, value *string, tar
 	}
 }
 
+func applyDurationConfig(seen map[string]bool, flagName string, value *string, target *time.Duration) error {
+	if value == nil || seen[flagName] {
+		return nil
+	}
+	parsed, err := time.ParseDuration(*value)
+	if err != nil {
+		return fmt.Errorf("配置字段 %q duration 无效: %w", flagName, err)
+	}
+	if parsed <= 0 {
+		return fmt.Errorf("配置字段 %q 必须大于 0", flagName)
+	}
+	*target = parsed
+	return nil
+}
+
+func applyNonNegativeDurationConfig(seen map[string]bool, flagName string, value *string, target *time.Duration) error {
+	if value == nil || seen[flagName] {
+		return nil
+	}
+	parsed, err := time.ParseDuration(*value)
+	if err != nil {
+		return fmt.Errorf("配置字段 %q duration 无效: %w", flagName, err)
+	}
+	if parsed < 0 {
+		return fmt.Errorf("配置字段 %q 不能小于 0", flagName)
+	}
+	*target = parsed
+	return nil
+}
+
 func validateCertificatePair(certPath, keyPath string) error {
 	if certPath == "" && keyPath == "" {
 		return nil
 	}
 	if certPath == "" || keyPath == "" {
 		return fmt.Errorf("证书和私钥必须同时配置")
+	}
+	return nil
+}
+
+func validateGlobalConfig() error {
+	checks := []struct {
+		name  string
+		value time.Duration
+	}{
+		{name: "dial-timeout", value: cfg.DialTimeout},
+		{name: "ws-handshake-timeout", value: cfg.WSHandshakeTimeout},
+		{name: "reconnect-delay", value: cfg.ReconnectDelay},
+		{name: "reconnect-max-delay", value: cfg.ReconnectMaxDelay},
+		{name: "rtt-timeout", value: cfg.RTTProbeTimeout},
+		{name: "dns-timeout", value: cfg.DNSQueryTimeout},
+		{name: "ech-retry-delay", value: cfg.ECHRetryDelay},
+		{name: "udp-read-timeout", value: cfg.UDPReadTimeout},
+		{name: "shutdown-timeout", value: cfg.ShutdownTimeout},
+	}
+	for _, check := range checks {
+		if check.value <= 0 {
+			return fmt.Errorf("%s 必须大于 0", check.name)
+		}
+	}
+	if cfg.ReconnectJitter < 0 {
+		return fmt.Errorf("reconnect-jitter 不能小于 0")
+	}
+	if cfg.ReconnectMaxDelay < cfg.ReconnectDelay {
+		return fmt.Errorf("reconnect-max-delay 不能小于 reconnect-delay")
 	}
 	return nil
 }
@@ -495,6 +604,9 @@ func main() {
 	}
 	if err := validateToken(token); err != nil {
 		log.Fatalf("[配置] token 无效: %v", err)
+	}
+	if err := validateGlobalConfig(); err != nil {
+		log.Fatalf("[配置] 全局参数无效: %v", err)
 	}
 	if metricsAddr != "" {
 		if err := validateListenHostPort(metricsAddr); err != nil {

@@ -138,11 +138,13 @@ func TestWriteMetrics(t *testing.T) {
 }
 
 func TestLoadConfigFileAppliesUnsetFlags(t *testing.T) {
+	oldCfg := cfg
 	oldListen, oldForward, oldToken := listenAddr, forwardAddr, token
 	oldMetrics, oldConnectionNum := metricsAddr, connectionNum
 	oldAllow, oldDeny := targetAllowCIDRs, targetDenyCIDRs
 	oldClientCA, oldClientCert, oldClientKey := clientCAFile, clientCertFile, clientKeyFile
 	defer func() {
+		cfg = oldCfg
 		listenAddr, forwardAddr, token = oldListen, oldForward, oldToken
 		metricsAddr, connectionNum = oldMetrics, oldConnectionNum
 		targetAllowCIDRs, targetDenyCIDRs = oldAllow, oldDeny
@@ -151,6 +153,8 @@ func TestLoadConfigFileAppliesUnsetFlags(t *testing.T) {
 	listenAddr, forwardAddr, token, metricsAddr = "", "", "", ""
 	targetAllowCIDRs, targetDenyCIDRs = "", ""
 	clientCAFile, clientCertFile, clientKeyFile = "", "", ""
+	cfg.DialTimeout = 3 * time.Second
+	cfg.ReconnectJitter = 500 * time.Millisecond
 	connectionNum = 3
 
 	path := filepath.Join(t.TempDir(), "config.json")
@@ -164,6 +168,8 @@ func TestLoadConfigFileAppliesUnsetFlags(t *testing.T) {
 		"client-ca": "ca.pem",
 		"client_cert": "client.pem",
 		"client-key": "client-key.pem",
+		"dial_timeout": "250ms",
+		"reconnect_jitter": "0s",
 		"connections": 2
 	}`
 	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
@@ -193,8 +199,69 @@ func TestLoadConfigFileAppliesUnsetFlags(t *testing.T) {
 	if clientCAFile != "ca.pem" || clientCertFile != "client.pem" || clientKeyFile != "client-key.pem" {
 		t.Fatalf("client mTLS config = %q %q %q", clientCAFile, clientCertFile, clientKeyFile)
 	}
+	if cfg.DialTimeout != 250*time.Millisecond {
+		t.Fatalf("DialTimeout = %s, want 250ms", cfg.DialTimeout)
+	}
+	if cfg.ReconnectJitter != 0 {
+		t.Fatalf("ReconnectJitter = %s, want 0", cfg.ReconnectJitter)
+	}
 	if connectionNum != 2 {
 		t.Fatalf("connectionNum = %d, want 2", connectionNum)
+	}
+}
+
+func TestLoadConfigFileRejectsInvalidDuration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"dial_timeout":"soon"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadConfigFile(path, nil); err == nil {
+		t.Fatal("loadConfigFile accepted invalid duration")
+	}
+}
+
+func TestLoadConfigFileRejectsNegativeJitter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"reconnect_jitter":"-1s"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadConfigFile(path, nil); err == nil {
+		t.Fatal("loadConfigFile accepted negative reconnect jitter")
+	}
+}
+
+func TestValidateGlobalConfig(t *testing.T) {
+	oldCfg := cfg
+	defer func() { cfg = oldCfg }()
+	cfg = GlobalConfig{
+		DialTimeout:        time.Second,
+		WSHandshakeTimeout: time.Second,
+		ReconnectDelay:     time.Second,
+		ReconnectMaxDelay:  time.Second,
+		ReconnectJitter:    0,
+		RTTProbeTimeout:    time.Second,
+		DNSQueryTimeout:    time.Second,
+		ECHRetryDelay:      time.Second,
+		UDPReadTimeout:     time.Second,
+		ShutdownTimeout:    time.Second,
+		ReadBuf:            64 * 1024,
+	}
+	if err := validateGlobalConfig(); err != nil {
+		t.Fatalf("validateGlobalConfig rejected zero jitter: %v", err)
+	}
+	cfg.ReconnectJitter = -time.Nanosecond
+	if err := validateGlobalConfig(); err == nil {
+		t.Fatal("validateGlobalConfig accepted negative jitter")
+	}
+	cfg.ReconnectJitter = 0
+	cfg.ReconnectMaxDelay = 500 * time.Millisecond
+	if err := validateGlobalConfig(); err == nil {
+		t.Fatal("validateGlobalConfig accepted max delay below initial delay")
+	}
+	cfg.ReconnectMaxDelay = time.Second
+	cfg.DialTimeout = 0
+	if err := validateGlobalConfig(); err == nil {
+		t.Fatal("validateGlobalConfig accepted zero dial timeout")
 	}
 }
 
