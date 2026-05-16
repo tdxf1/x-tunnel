@@ -1442,3 +1442,23 @@ Review:
 
 - CI now runs bounded fuzz smoke for protocol hello and SOCKS5 UDP packet parsing after the normal race test.
 - The local run did not create repository fuzz corpus files; generated interesting inputs stayed in Go's fuzz cache.
+
+Post Phase 8 HTTP proxy hop-by-hop header stripping:
+
+- [x] Strip `Proxy-Connection` before forwarding ordinary HTTP proxy requests.
+- [x] Keep local consumption/removal of `Proxy-Authorization` in the same helper.
+- [x] Update protocol docs for forwarded HTTP proxy headers.
+- [x] Add focused unit coverage and run full verification before commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'Test(StripHTTPProxyHeaders|HandleHTTP|HTTPProxyTarget)' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 56.1% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- Ordinary HTTP proxy requests now remove both locally consumed `Proxy-Authorization` and proxy-only `Proxy-Connection` before forwarding.
+- `docs/protocol.md` now documents the stripped proxy headers.

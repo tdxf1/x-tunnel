@@ -255,7 +255,7 @@ The local HTTP listener accepts three proxy forms:
 - Absolute-form HTTP requests such as `GET http://host[:port]/path HTTP/1.1`. A missing port defaults to `80`.
 - Origin-form requests such as `GET /path HTTP/1.1` with a valid `Host` header. A missing port defaults to `80`.
 
-Non-CONNECT absolute-form requests are accepted only with the `http` scheme. Absolute-form `https://`, `ftp://`, URL userinfo, malformed authorities, and mismatched `Host` versus URL authorities are rejected with `400 Bad Request` before any smux stream opens. `Proxy-Authorization` is consumed locally and removed before forwarding ordinary HTTP requests.
+Non-CONNECT absolute-form requests are accepted only with the `http` scheme. Absolute-form `https://`, `ftp://`, URL userinfo, malformed authorities, and mismatched `Host` versus URL authorities are rejected with `400 Bad Request` before any smux stream opens. `Proxy-Authorization` is consumed locally before forwarding ordinary HTTP requests, and proxy-only hop-by-hop headers such as `Proxy-Connection` are stripped.
 
 ## 11. Current Risk Map
 

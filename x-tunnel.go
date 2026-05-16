@@ -4080,7 +4080,7 @@ func handleHTTP(c net.Conn, cfgp *ProxyConfig) {
 			return
 		}
 	}
-	req.Header.Del("Proxy-Authorization")
+	stripHTTPProxyHeaders(req.Header)
 
 	target, err := httpProxyTarget(req)
 	if err != nil {
@@ -4128,6 +4128,11 @@ func handleHTTP(c net.Conn, cfgp *ProxyConfig) {
 
 func writeHTTPProxyResponse(w io.Writer, response string) error {
 	return writeAll(w, []byte(response))
+}
+
+func stripHTTPProxyHeaders(h http.Header) {
+	h.Del("Proxy-Authorization")
+	h.Del("Proxy-Connection")
 }
 
 func forwardBufferedHTTPBytes(br *bufio.Reader, stream io.Writer) error {

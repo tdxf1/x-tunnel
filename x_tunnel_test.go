@@ -2418,6 +2418,29 @@ func TestHandleHTTPRejectsUnsupportedAbsoluteFormScheme(t *testing.T) {
 	}
 }
 
+func TestStripHTTPProxyHeaders(t *testing.T) {
+	h := http.Header{}
+	h.Set("Proxy-Authorization", "Basic secret")
+	h.Set("Proxy-Connection", "keep-alive")
+	h.Set("Connection", "close")
+	h.Set("User-Agent", "x-tunnel-test")
+
+	stripHTTPProxyHeaders(h)
+
+	if got := h.Get("Proxy-Authorization"); got != "" {
+		t.Fatalf("Proxy-Authorization header = %q, want removed", got)
+	}
+	if got := h.Get("Proxy-Connection"); got != "" {
+		t.Fatalf("Proxy-Connection header = %q, want removed", got)
+	}
+	if got := h.Get("Connection"); got != "close" {
+		t.Fatalf("Connection header = %q, want close", got)
+	}
+	if got := h.Get("User-Agent"); got != "x-tunnel-test" {
+		t.Fatalf("User-Agent header = %q, want x-tunnel-test", got)
+	}
+}
+
 func TestHandleHTTPConnectForwardsBufferedClientBytes(t *testing.T) {
 	oldPool := echPool
 	oldCfg := cfg
