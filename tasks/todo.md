@@ -2375,3 +2375,23 @@ Review:
 
 - Protocol payload length checks now use a shared `maxProtocolFieldLen` constant instead of repeated `65535` literals.
 - Optional payload write/read logic is centralized while existing wire golden tests keep the frame bytes unchanged.
+
+Post Phase 8 HTTP CONNECT RFC 9110 response alignment:
+
+- [x] Standardize local HTTP CONNECT success response to `HTTP/1.1 200 Connection Established`.
+- [x] Verify CONNECT success responses do not include `Content-Length` or `Transfer-Encoding`.
+- [x] Document the CONNECT 2xx tunnel response behavior against RFC 9110.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'TestHandleHTTPConnectForwardsBufferedClientBytes|TestHandleHTTPPostOpensStreamBeforeBodyComplete' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 72.9% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- CONNECT success responses now use the common ASCII `200 Connection Established` reason phrase.
+- Tests and docs lock the RFC 9110 tunnel response behavior: no `Content-Length` or `Transfer-Encoding` on successful CONNECT.

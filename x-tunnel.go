@@ -4143,7 +4143,7 @@ func handleHTTP(c net.Conn, cfgp *ProxyConfig) {
 		return
 	}
 	if req.Method == "CONNECT" {
-		if err := writeHTTPProxyResponse(c, "HTTP/1.1 200 连接已建立\r\n\r\n"); err != nil {
+		if err := writeHTTPProxyResponse(c, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
 			_ = stream.Close()
 			return
 		}

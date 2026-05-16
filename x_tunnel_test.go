@@ -4009,6 +4009,15 @@ func TestHandleHTTPConnectForwardsBufferedClientBytes(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("CONNECT response status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
+	if resp.Status != "200 Connection Established" {
+		t.Fatalf("CONNECT response status line = %q, want 200 Connection Established", resp.Status)
+	}
+	if got := resp.Header.Get("Content-Length"); got != "" {
+		t.Fatalf("CONNECT response Content-Length = %q, want absent", got)
+	}
+	if got := resp.Header.Get("Transfer-Encoding"); got != "" {
+		t.Fatalf("CONNECT response Transfer-Encoding = %q, want absent", got)
+	}
 
 	var serverStream *smux.Stream
 	select {

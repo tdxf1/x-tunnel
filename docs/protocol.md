@@ -271,6 +271,8 @@ The local HTTP listener accepts three proxy forms:
 
 Non-CONNECT absolute-form requests are accepted only with the `http` scheme. Absolute-form `https://`, `ftp://`, URL userinfo, malformed authorities, invalid DNS hostnames, and mismatched `Host` versus URL authorities are rejected with `400 Bad Request` before any smux stream opens. `Proxy-Authorization` is consumed locally before forwarding ordinary HTTP requests, with the Basic auth scheme matched case-insensitively. Hop-by-hop request headers are stripped before forwarding, including fields named by `Connection` plus common proxy/connection-only fields such as `Proxy-Connection`, `Keep-Alive`, `TE`, `Trailer`, `Transfer-Encoding`, and `Upgrade`; close state from `Connection: close` is also cleared. Forwarded non-CONNECT requests append `Via: 1.1 x-tunnel`, preserving any existing `Via` values. CONNECT tunnel payload bytes remain opaque and do not receive proxy-added request headers.
 
+Successful CONNECT requests return `HTTP/1.1 200 Connection Established` and then switch the connection to opaque tunnel bytes. Following RFC 9110 CONNECT guidance, this 2xx response does not include `Content-Length` or `Transfer-Encoding`.
+
 ## 11. Current Risk Map
 
 ### Compatibility Risks
