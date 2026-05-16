@@ -1400,3 +1400,45 @@ Review:
 
 - `handleSOCKS5` now delegates command/address/port parsing to `readLocalSOCKS5Request`, keeping policy and dispatch logic separate from byte parsing.
 - Parser tests cover IPv4, domain, IPv6, bad RSV, unsupported ATYP, zero CONNECT port, and truncated input.
+
+Post Phase 8 wsNetConn adapter coverage:
+
+- [x] Add a real `httptest` WebSocket pair helper for wsNetConn tests.
+- [x] Cover binary frame writes and partial reads through `wsNetConn`.
+- [x] Cover local/remote addresses, deadline forwarding, close signaling, and recorded dead errors.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'TestWSNetConn' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 56.0% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- wsNetConn now has real WebSocket adapter coverage for binary frame writes, buffered partial reads, deadline forwarding, address accessors, and close/dead signaling.
+- The test uses `httptest` plus gorilla/websocket rather than mocks, so it exercises the same frame APIs used by smux channels.
+
+Post Phase 8 CI parser fuzz smoke:
+
+- [x] Add short CI fuzz smoke for the protocol hello parser.
+- [x] Add short CI fuzz smoke for the SOCKS5 UDP packet parser.
+- [x] Run both fuzz smoke commands locally plus full test verification.
+- [x] Commit the workflow update with verification notes.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'TestWSNetConn' -count=1 ./...`: pass.
+- `go test -run '^$' -fuzz FuzzReadProtocolHello -fuzztime=2s -parallel=1 ./...`: pass.
+- `go test -run '^$' -fuzz FuzzParseSOCKS5UDPPacket -fuzztime=2s -parallel=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 56.0% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- CI now runs bounded fuzz smoke for protocol hello and SOCKS5 UDP packet parsing after the normal race test.
+- The local run did not create repository fuzz corpus files; generated interesting inputs stayed in Go's fuzz cache.

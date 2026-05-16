@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/xtaci/smux"
 )
 
@@ -1185,6 +1186,122 @@ func TestParseTargetPolicyRejectsInvalidHostPattern(t *testing.T) {
 	}
 	if _, err := parseTargetPolicy("", "", "bad host.example", ""); err == nil {
 		t.Fatal("parseTargetPolicy accepted host pattern with whitespace")
+	}
+}
+
+func newTestWSNetConnPair(t *testing.T) (*wsNetConn, *wsNetConn) {
+	t.Helper()
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	serverConnCh := make(chan *websocket.Conn, 1)
+	serverErrCh := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		serverConnCh <- conn
+	}))
+	t.Cleanup(server.Close)
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	clientWS, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial test websocket: %v", err)
+	}
+
+	var serverWS *websocket.Conn
+	select {
+	case serverWS = <-serverConnCh:
+	case err := <-serverErrCh:
+		_ = clientWS.Close()
+		t.Fatalf("upgrade test websocket: %v", err)
+	case <-time.After(time.Second):
+		_ = clientWS.Close()
+		t.Fatal("timed out waiting for test websocket upgrade")
+	}
+
+	client := newWSNetConn(clientWS)
+	serverConn := newWSNetConn(serverWS)
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = serverConn.Close()
+	})
+	return client, serverConn
+}
+
+func TestWSNetConnReadWrite(t *testing.T) {
+	client, server := newTestWSNetConnPair(t)
+	deadline := time.Now().Add(time.Second)
+	_ = client.SetDeadline(deadline)
+	_ = server.SetDeadline(deadline)
+
+	n, err := client.Write([]byte("hello"))
+	if err != nil {
+		t.Fatalf("client Write returned error: %v", err)
+	}
+	if n != len("hello") {
+		t.Fatalf("client Write n = %d, want %d", n, len("hello"))
+	}
+	first := make([]byte, 2)
+	if n, err := io.ReadFull(server, first); err != nil || n != len(first) {
+		t.Fatalf("server partial read = %d, %v", n, err)
+	}
+	if string(first) != "he" {
+		t.Fatalf("server first read = %q, want he", first)
+	}
+	second := make([]byte, 3)
+	if n, err := io.ReadFull(server, second); err != nil || n != len(second) {
+		t.Fatalf("server second read = %d, %v", n, err)
+	}
+	if string(second) != "llo" {
+		t.Fatalf("server second read = %q, want llo", second)
+	}
+
+	n, err = server.Write([]byte("world"))
+	if err != nil {
+		t.Fatalf("server Write returned error: %v", err)
+	}
+	if n != len("world") {
+		t.Fatalf("server Write n = %d, want %d", n, len("world"))
+	}
+	reply := make([]byte, 5)
+	if n, err := io.ReadFull(client, reply); err != nil || n != len(reply) {
+		t.Fatalf("client read reply = %d, %v", n, err)
+	}
+	if string(reply) != "world" {
+		t.Fatalf("client reply = %q, want world", reply)
+	}
+}
+
+func TestWSNetConnAddressesDeadlinesAndClose(t *testing.T) {
+	client, server := newTestWSNetConnPair(t)
+	if client.LocalAddr() == nil || client.RemoteAddr() == nil {
+		t.Fatalf("client addresses = local %v remote %v, want non-nil", client.LocalAddr(), client.RemoteAddr())
+	}
+	if server.LocalAddr() == nil || server.RemoteAddr() == nil {
+		t.Fatalf("server addresses = local %v remote %v, want non-nil", server.LocalAddr(), server.RemoteAddr())
+	}
+	if err := client.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SetDeadline returned error: %v", err)
+	}
+	if err := server.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline returned error: %v", err)
+	}
+	if err := server.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SetWriteDeadline returned error: %v", err)
+	}
+
+	if err := client.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+	select {
+	case <-client.Dead():
+	case <-time.After(time.Second):
+		t.Fatal("client Dead channel did not close")
+	}
+	if !errors.Is(client.DeadErr(), io.EOF) {
+		t.Fatalf("client DeadErr = %v, want %v", client.DeadErr(), io.EOF)
 	}
 }
 
