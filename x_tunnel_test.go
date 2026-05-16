@@ -1758,6 +1758,14 @@ func TestHTTPProxyTargetRejectsMalformed(t *testing.T) {
 			req:  &http.Request{Method: http.MethodGet, Host: "example.com", URL: &url.URL{Scheme: "http", Host: "example.com", User: url.User("user")}},
 		},
 		{
+			name: "https absolute url",
+			req:  &http.Request{Method: http.MethodGet, Host: "example.com", URL: &url.URL{Scheme: "https", Host: "example.com"}},
+		},
+		{
+			name: "ftp absolute url",
+			req:  &http.Request{Method: http.MethodGet, Host: "example.com", URL: &url.URL{Scheme: "ftp", Host: "example.com"}},
+		},
+		{
 			name: "unbracketed ipv6",
 			req:  &http.Request{Method: http.MethodGet, Host: "2001:db8::1", URL: &url.URL{Path: "/"}},
 		},
@@ -1774,6 +1782,14 @@ func TestHTTPProxyTargetRejectsMalformed(t *testing.T) {
 
 func TestHandleHTTPRejectsMalformedProxyTarget(t *testing.T) {
 	resp := handleHTTPResponse(t, "GET / HTTP/1.1\r\nHost: example.com:bad\r\n\r\n", &ProxyConfig{})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("HTTP status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+func TestHandleHTTPRejectsUnsupportedAbsoluteFormScheme(t *testing.T) {
+	resp := handleHTTPResponse(t, "GET https://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n", &ProxyConfig{})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("HTTP status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
@@ -1810,6 +1826,20 @@ func TestReadSmuxOpenHeaderMalformed(t *testing.T) {
 	raw := []byte{streamKindTCP, IPStrategyDefault, 0, 5, 'a'}
 	if _, _, _, err := readSmuxOpenHeader(bytes.NewReader(raw)); err == nil {
 		t.Fatal("readSmuxOpenHeader accepted truncated target")
+	}
+}
+
+func TestValidateSmuxStreamTarget(t *testing.T) {
+	for _, target := range []string{"example.com:443", "127.0.0.1:80", "[2001:db8::1]:53"} {
+		if err := validateSmuxStreamTarget(target); err != nil {
+			t.Fatalf("validateSmuxStreamTarget(%q) returned error: %v", target, err)
+		}
+	}
+
+	for _, target := range []string{"", "example.com", "example.com:0", "example.com:bad", ":443"} {
+		if err := validateSmuxStreamTarget(target); err == nil {
+			t.Fatalf("validateSmuxStreamTarget(%q) accepted malformed target", target)
+		}
 	}
 }
 
@@ -1898,6 +1928,82 @@ func TestHandleSmuxStreamRejectsUnsupportedKind(t *testing.T) {
 	}
 	if got := atomic.LoadUint64(&serverUnsupportedStreamSeq); got != 1 {
 		t.Fatalf("serverUnsupportedStreamSeq = %d, want 1", got)
+	}
+}
+
+func TestHandleSmuxStreamRejectsMalformedTCPTargetWithStatus(t *testing.T) {
+	oldTargetRejects := atomic.LoadUint64(&serverTargetRejectSeq)
+	defer atomic.StoreUint64(&serverTargetRejectSeq, oldTargetRejects)
+	atomic.StoreUint64(&serverTargetRejectSeq, 0)
+
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	serverSession, err := smux.Server(serverConn, nil)
+	if err != nil {
+		t.Fatalf("smux server: %v", err)
+	}
+	defer serverSession.Close()
+	clientSession, err := smux.Client(clientConn, nil)
+	if err != nil {
+		t.Fatalf("smux client: %v", err)
+	}
+	defer clientSession.Close()
+
+	accepted := make(chan *smux.Stream, 1)
+	acceptErr := make(chan error, 1)
+	go func() {
+		stream, err := serverSession.AcceptStream()
+		if err != nil {
+			acceptErr <- err
+			return
+		}
+		accepted <- stream
+	}()
+
+	clientStream, err := clientSession.OpenStream()
+	if err != nil {
+		t.Fatalf("open smux stream: %v", err)
+	}
+	defer clientStream.Close()
+	_ = clientStream.SetDeadline(time.Now().Add(time.Second))
+	if err := writeSmuxOpenHeader(clientStream, streamKindTCP, IPStrategyDefault, ""); err != nil {
+		t.Fatalf("write malformed TCP stream header: %v", err)
+	}
+
+	var serverStream *smux.Stream
+	select {
+	case serverStream = <-accepted:
+	case err := <-acceptErr:
+		t.Fatalf("accept smux stream: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for accepted smux stream")
+	}
+
+	done := make(chan struct{})
+	session := &ClientSession{clientID: "malformed-target-test", channels: make(map[uint64]*WSChannel)}
+	ch := &WSChannel{id: 1, session: session, capabilities: protocolCapabilityTCPStatus}
+	go func() {
+		defer close(done)
+		handleSmuxStream(session, ch, serverStream)
+	}()
+
+	status, message, err := readTCPOpenStatus(clientStream)
+	if err != nil {
+		t.Fatalf("read TCP open status: %v", err)
+	}
+	if status != tcpOpenStatusError || !strings.Contains(message, "目标地址无效") {
+		t.Fatalf("TCP open status = %d %q, want target validation error", status, message)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for malformed target handler")
+	}
+	if got := atomic.LoadUint64(&serverTargetRejectSeq); got != 1 {
+		t.Fatalf("serverTargetRejectSeq = %d, want 1", got)
 	}
 }
 

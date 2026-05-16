@@ -961,3 +961,25 @@ Verification:
 - `go test -count=1 ./...`: pass.
 - `go test -cover -count=1 ./...`: pass, `coverage: 46.0% of statements`.
 - `go test -race -count=1 ./...`: pass.
+
+Post Phase 8 smux stream target validation:
+
+- [x] Reject TCP/UDP smux streams with empty or malformed target addresses before dial/relay setup.
+- [x] Preserve ping/hello streams without targets.
+- [x] Return TCP open-status errors when the client negotiated TCP status capability.
+- [x] Add focused unit coverage and run full verification before commit.
+
+Post Phase 8 HTTP proxy absolute-form scheme validation:
+
+- [x] Reject non-CONNECT absolute-form URLs unless the scheme is `http`.
+- [x] Preserve CONNECT and origin-form behavior.
+- [x] Add focused target parser and handler coverage.
+- [x] Run focused/full/coverage verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'Test(HTTPProxyTarget|HandleHTTPRejectsMalformedProxyTarget|HandleHTTPRejectsUnsupportedAbsoluteFormScheme|ValidateSmuxStreamTarget|HandleSmuxStreamRejectsMalformedTCPTargetWithStatus)' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 46.3% of statements`.
+- `go test -race -count=1 ./...`: pass.

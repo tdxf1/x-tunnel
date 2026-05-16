@@ -1260,6 +1260,13 @@ func ensureTargetAllowed(target string) error {
 	return nil
 }
 
+func validateSmuxStreamTarget(target string) error {
+	if err := validateHostPort(target); err != nil {
+		return fmt.Errorf("目标地址无效: %w", err)
+	}
+	return nil
+}
+
 type wsNetConn struct {
 	ws       *websocket.Conn
 	readMu   sync.Mutex
@@ -2732,6 +2739,14 @@ func handleSmuxStream(session *ClientSession, ch *WSChannel, stream *smux.Stream
 	case streamKindTCP:
 		log.Printf("[服务端] 客户ID:%s TCP 打开: %s, 通道:%d", shortID(session.clientID), target, ch.id)
 		sendOpenStatus := atomic.LoadUint32(&ch.capabilities)&protocolCapabilityTCPStatus != 0
+		if err := validateSmuxStreamTarget(target); err != nil {
+			atomic.AddUint64(&serverTargetRejectSeq, 1)
+			log.Printf("[服务端] 客户ID:%s TCP 拒绝: %s, reason=%v, 通道:%d", shortID(session.clientID), target, err, ch.id)
+			if sendOpenStatus {
+				_ = writeTCPOpenStatus(stream, tcpOpenStatusError, err.Error())
+			}
+			return
+		}
 		if err := ensureTargetAllowed(target); err != nil {
 			atomic.AddUint64(&serverTargetRejectSeq, 1)
 			log.Printf("[服务端] 客户ID:%s TCP 拒绝: %s, reason=%v, 通道:%d", shortID(session.clientID), target, err, ch.id)
@@ -2763,6 +2778,11 @@ func handleSmuxStream(session *ClientSession, ch *WSChannel, stream *smux.Stream
 		log.Printf("[服务端] 客户ID:%s TCP 关闭: %s, 通道:%d", shortID(session.clientID), target, ch.id)
 	case streamKindUDP:
 		log.Printf("[服务端] 客户ID:%s SOCKS5 UDP 访问: %s, 通道:%d", shortID(session.clientID), target, ch.id)
+		if err := validateSmuxStreamTarget(target); err != nil {
+			atomic.AddUint64(&serverTargetRejectSeq, 1)
+			log.Printf("[服务端] 客户ID:%s UDP 拒绝: %s, reason=%v, 通道:%d", shortID(session.clientID), target, err, ch.id)
+			return
+		}
 		if err := ensureTargetAllowed(target); err != nil {
 			atomic.AddUint64(&serverTargetRejectSeq, 1)
 			log.Printf("[服务端] 客户ID:%s UDP 拒绝: %s, reason=%v, 通道:%d", shortID(session.clientID), target, err, ch.id)
@@ -3926,6 +3946,9 @@ func httpProxyTarget(req *http.Request) (string, error) {
 
 	target := strings.TrimSpace(req.Host)
 	if req.Method != "CONNECT" && req.URL != nil && req.URL.IsAbs() {
+		if !strings.EqualFold(req.URL.Scheme, "http") {
+			return "", fmt.Errorf("不支持的代理 URL scheme: %s", req.URL.Scheme)
+		}
 		if req.URL.User != nil {
 			return "", fmt.Errorf("代理目标不能包含 userinfo")
 		}
