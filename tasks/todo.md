@@ -928,3 +928,21 @@ Verification:
 - `go test -run 'Test(SOCKS5UDPPacket|SOCKS5UDPResp|BuildSOCKS5UDPPacket)' -count=1 ./...`: pass.
 - `go test -count=1 ./...`: pass.
 - `go test -cover -count=1 ./...`: pass, `coverage: 45.7% of statements`.
+
+Post Phase 8 CI test timeout hardening:
+
+- [x] Add explicit Go test timeouts to CI test, coverage, and race steps.
+- [x] Disable Go test cache in CI with `-count=1`.
+- [x] Keep existing build and release smoke steps unchanged.
+- [x] Run local equivalents before commit.
+
+Verification:
+
+- `go test -count=1 -timeout=2m ./...`: pass.
+- `go test -cover -count=1 -timeout=2m ./...`: pass, `coverage: 45.7% of statements`.
+- `go test -race -count=1 -timeout=3m ./...`: pass.
+- `go build -o /tmp/x-tunnel-ci-local .`: pass.
+- `OUT=/tmp/x-tunnel-ci VERSION=ci COMMIT=local BUILD_DATE=ci ./scripts/build.sh`: pass.
+- `/tmp/x-tunnel-ci -version`: pass, `x-tunnel version=ci commit=local build=ci`.
+- `TARGETS=linux/amd64 DIST=/tmp/x-tunnel-dist VERSION=ci COMMIT=local BUILD_DATE=ci ./scripts/release.sh`: pass.
+- `test -s /tmp/x-tunnel-dist/SHA256SUMS`: pass.
