@@ -37,7 +37,7 @@ Current alignment:
 
 - `CONNECT host:port HTTP/1.1` opens an opaque TCP tunnel through smux.
 - A successful CONNECT response is `HTTP/1.1 200 Connection Established`, with no `Content-Length` and no `Transfer-Encoding`, before switching to tunnel bytes.
-- Failed remote TCP opens return `502 Bad Gateway` locally instead of starting a tunnel.
+- Failed remote TCP opens return an HTTP error locally instead of starting a tunnel. Structured `policy_denied` failures map to `403 Forbidden`; legacy/unstructured failures and dial/setup failures map to `502 Bad Gateway`.
 - Non-CONNECT proxy requests accept `http://` absolute-form requests and origin-form requests with a `Host` header.
 - Hop-by-hop headers, including headers named by `Connection`, are stripped before forwarding ordinary HTTP requests.
 - Forwarded non-CONNECT requests append `Via: 1.1 x-tunnel`.

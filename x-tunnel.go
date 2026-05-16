@@ -3024,6 +3024,14 @@ func socks5ReplyForOpenError(err error) byte {
 	return 0x05
 }
 
+func httpStatusForOpenError(err error) int {
+	var openErr *remoteOpenError
+	if errors.As(err, &openErr) && openErr.code == openStatusCodePolicyDenied {
+		return http.StatusForbidden
+	}
+	return http.StatusBadGateway
+}
+
 func handleSmuxStream(session *ClientSession, ch *WSChannel, stream *smux.Stream) {
 	defer func() {
 		session.releaseStream()
@@ -4418,7 +4426,8 @@ func handleHTTP(c net.Conn, cfgp *ProxyConfig) {
 	stream, _, decision, err := echPool.openTCPStream(target)
 	if err != nil {
 		log.Printf("[客户端] %s HTTP 打开失败 %s: %v", clientSourceAddr(c), target, err)
-		_ = writeHTTPProxyResponse(c, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+		status := httpStatusForOpenError(err)
+		_ = writeHTTPProxyResponse(c, fmt.Sprintf("HTTP/1.1 %d %s\r\nContent-Length: 0\r\n\r\n", status, http.StatusText(status)))
 		return
 	}
 	if req.Method == "CONNECT" {

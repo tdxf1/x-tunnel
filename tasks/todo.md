@@ -3042,3 +3042,22 @@ Review:
 
 - Client RTT probe failures are now counted on both startup probe and ongoing probe-loop failures.
 - `/metrics` exports `x_tunnel_client_rtt_probe_failures_total`, and tests cover both output and increment behavior.
+
+Post Phase 9 HTTP policy-denied status mapping:
+
+- [x] Map structured remote `policy_denied` TCP open failures to HTTP `403 Forbidden`.
+- [x] Keep legacy/unstructured HTTP proxy open failures mapped to `502 Bad Gateway`.
+- [x] Update docs and run focused/full/coverage/race verification before commit.
+
+Verification:
+
+- `go test -run 'TestIntegrationTCPStatusRejectsBlockedTarget|TestHandleHTTPConnect.*TCPStatusError|TestHandleHTTPConnectMapsPolicyDeniedStatusCodeToForbidden|TestHandleHTTPGetReturnsBadGatewayOnTCPStatusError' -count=1 ./...`: pass.
+- `git diff --check`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 77.5% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- HTTP proxy and CONNECT now return `403 Forbidden` for structured remote policy denials.
+- Legacy/unstructured remote open failures still return `502 Bad Gateway`, and the end-to-end TCPStatus integration test now verifies the negotiated policy-denied path.

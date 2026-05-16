@@ -5091,6 +5091,80 @@ func TestHandleHTTPConnectReturnsBadGatewayOnTCPStatusError(t *testing.T) {
 	}
 }
 
+func TestHandleHTTPConnectMapsPolicyDeniedStatusCodeToForbidden(t *testing.T) {
+	oldPool := echPool
+	oldCfg := cfg
+	oldIPStrategy := ipStrategy
+	t.Cleanup(func() {
+		echPool = oldPool
+		cfg = oldCfg
+		ipStrategy = oldIPStrategy
+	})
+	cfg.DialTimeout = time.Second
+	ipStrategy = IPStrategyDefault
+
+	serverSession, clientSession := newProtocolNegotiationSmuxPair(t)
+	echPool = &ECHPool{
+		smuxConns:   []*smux.Session{clientSession},
+		channelRTT:  []int64{int64(5 * time.Millisecond)},
+		channelCaps: []uint32{protocolCapabilityTCPStatus | protocolCapabilityOpenStatusCode},
+	}
+	serverDone := make(chan error, 1)
+	go func() {
+		stream, err := serverSession.AcceptStream()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer stream.Close()
+		if err := stream.SetDeadline(time.Now().Add(time.Second)); err != nil {
+			serverDone <- err
+			return
+		}
+		kind, strategy, target, err := readSmuxOpenHeader(stream)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if kind != streamKindTCP || strategy != IPStrategyDefault || target != "blocked.example:443" {
+			serverDone <- fmt.Errorf("HTTP CONNECT status-code header = kind %d strategy %d target %q", kind, strategy, target)
+			return
+		}
+		serverDone <- writeTCPOpenStatusCode(stream, tcpOpenStatusError, openStatusCodePolicyDenied, "blocked by policy")
+	}()
+
+	proxyServer, proxyClient := net.Pipe()
+	_ = proxyServer.SetDeadline(time.Now().Add(time.Second))
+	_ = proxyClient.SetDeadline(time.Now().Add(time.Second))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handleHTTP(proxyServer, &ProxyConfig{})
+	}()
+
+	req := "CONNECT blocked.example:443 HTTP/1.1\r\nHost: blocked.example:443\r\n\r\n"
+	if err := writeAll(proxyClient, []byte(req)); err != nil {
+		t.Fatalf("write CONNECT request: %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(proxyClient), nil)
+	if err != nil {
+		t.Fatalf("read CONNECT policy-denied response: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("CONNECT policy-denied response status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+
+	if err := <-serverDone; err != nil {
+		t.Fatalf("server HTTP CONNECT policy-denied handler: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for policy-denied HTTP CONNECT handler shutdown")
+	}
+}
+
 func TestHandleHTTPGetReturnsBadGatewayOnTCPStatusError(t *testing.T) {
 	oldPool := echPool
 	oldCfg := cfg

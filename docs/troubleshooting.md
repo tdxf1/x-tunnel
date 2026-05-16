@@ -46,7 +46,7 @@ Checks:
 Symptoms:
 
 - Server logs `TCP 拒绝` or `UDP 拒绝`.
-- New clients with negotiated TCPStatus map TCP target failures to local SOCKS5 failure replies, HTTP `502 Bad Gateway`, or a closed TCP-forward connection.
+- New clients with negotiated TCPStatus map TCP target failures to local SOCKS5 failure replies, HTTP `403 Forbidden` for structured policy denials, HTTP `502 Bad Gateway` for other remote open failures, or a closed TCP-forward connection.
 - Legacy channels may still show an empty reply or closed stream.
 
 Checks:
