@@ -4842,6 +4842,44 @@ func TestNegotiateClientProtocolSuccess(t *testing.T) {
 	}
 }
 
+func TestECHPoolProbeChannelRTTOnceUsesPingStream(t *testing.T) {
+	oldCfg := cfg
+	t.Cleanup(func() { cfg = oldCfg })
+	cfg.RTTProbeTimeout = time.Second
+
+	serverSession, clientSession := newProtocolNegotiationSmuxPair(t)
+	serverDone := make(chan struct{})
+	serverErr := make(chan error, 1)
+	session := &ClientSession{clientID: "probe-rtt-test", channels: make(map[uint64]*WSChannel)}
+	ch := &WSChannel{id: 1, session: session}
+	go func() {
+		stream, err := serverSession.AcceptStream()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		handleSmuxStream(session, ch, stream)
+		close(serverDone)
+	}()
+
+	p := &ECHPool{}
+	rtt, err := p.probeChannelRTTOnce(clientSession, time.Second)
+	if err != nil {
+		t.Fatalf("probeChannelRTTOnce returned error: %v", err)
+	}
+	if rtt <= 0 {
+		t.Fatalf("probeChannelRTTOnce RTT = %d, want positive duration", rtt)
+	}
+
+	select {
+	case <-serverDone:
+	case err := <-serverErr:
+		t.Fatalf("accept ping stream: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for ping stream handler")
+	}
+}
+
 func TestNegotiateClientProtocolLegacyClose(t *testing.T) {
 	serverSession, clientSession := newProtocolNegotiationSmuxPair(t)
 	serverDone := make(chan error, 1)

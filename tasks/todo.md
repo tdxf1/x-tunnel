@@ -2217,3 +2217,23 @@ Review:
 
 - `handleWebSocketChannel` now has real WebSocket and smux coverage for protocol hello negotiation.
 - The test verifies channel capability storage and that closing the client removes the channel and session.
+
+Post Phase 8 ECHPool RTT probe ping path:
+
+- [x] Cover `probeChannelRTTOnce` with a real smux session.
+- [x] Serve the probe through `handleSmuxStream` ping handling instead of a mock echo.
+- [x] Verify RTT result and handler completion.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'TestECHPoolProbeChannelRTTOnceUsesPingStream|TestHandleSmuxStreamPingEcho' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 70.9% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- RTT probing now has a real smux ping-stream test instead of only server-side ping echo coverage.
+- The test verifies a positive RTT result and clean completion of the server ping handler.
