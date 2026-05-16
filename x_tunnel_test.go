@@ -5301,6 +5301,56 @@ func TestECHPoolProbeChannelRTTOnceUsesPingStream(t *testing.T) {
 	}
 }
 
+func TestECHPoolProbeChannelRTTUpdatesAndExits(t *testing.T) {
+	oldCfg := cfg
+	t.Cleanup(func() { cfg = oldCfg })
+	cfg.RTTProbeTimeout = 20 * time.Millisecond
+
+	serverSession, clientSession := newProtocolNegotiationSmuxPair(t)
+	session := &ClientSession{clientID: "probe-rtt-loop-test", channels: make(map[uint64]*WSChannel)}
+	ch := &WSChannel{id: 1, session: session}
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		for {
+			stream, err := serverSession.AcceptStream()
+			if err != nil {
+				return
+			}
+			go handleSmuxStream(session, ch, stream)
+		}
+	}()
+
+	p := &ECHPool{channelRTT: []int64{0}}
+	done := make(chan error, 1)
+	go p.probeChannelRTT(clientSession, 0, done)
+
+	deadline := time.After(time.Second)
+	for atomic.LoadInt64(&p.channelRTT[0]) <= 0 {
+		select {
+		case <-deadline:
+			t.Fatal("probeChannelRTT did not update channel RTT")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	_ = clientSession.Close()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("probeChannelRTT returned nil after session close, want close error")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("probeChannelRTT did not exit after session close")
+	}
+	_ = serverSession.Close()
+	select {
+	case <-serverDone:
+	case <-time.After(time.Second):
+		t.Fatal("server smux accept loop did not exit")
+	}
+}
+
 func TestNegotiateClientProtocolLegacyClose(t *testing.T) {
 	serverSession, clientSession := newProtocolNegotiationSmuxPair(t)
 	serverDone := make(chan error, 1)

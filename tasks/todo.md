@@ -2512,3 +2512,22 @@ Review:
 
 - Added a durable research note that maps SOCKS5, HTTP CONNECT, and CONNECT-UDP/MASQUE standards to current x-tunnel behavior and future work.
 - The note keeps CONNECT-UDP explicitly out of current wire compatibility, which helps avoid accidental protocol claims while planning future UDP work.
+
+Post Phase 8 ECHPool RTT probe loop coverage:
+
+- [x] Cover `probeChannelRTT` updating channel RTT through real smux ping streams.
+- [x] Verify the probe goroutine exits after its smux session is closed.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'TestECHPoolProbeChannelRTT(OnceUsesPingStream|UpdatesAndExits)' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 74.3% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- `probeChannelRTT` now has coverage for its continuous loop, not only the single ping helper.
+- The test proves real smux ping probes update `channelRTT` and the goroutine exits after the session closes.
