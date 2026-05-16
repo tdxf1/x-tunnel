@@ -2693,6 +2693,27 @@ func writeMetrics(w io.Writer) {
 	fmt.Fprintf(w, "x_tunnel_server_channels %d\n", countServerChannels())
 	fmt.Fprintf(w, "# TYPE x_tunnel_server_active_streams gauge\n")
 	fmt.Fprintf(w, "x_tunnel_server_active_streams %d\n", countServerActiveStreams())
+	writeClientChannelMetrics(w, echPool)
+}
+
+func writeClientChannelMetrics(w io.Writer, pool *ECHPool) {
+	if pool == nil {
+		return
+	}
+	fmt.Fprintf(w, "# TYPE x_tunnel_client_channel_up gauge\n")
+	fmt.Fprintf(w, "# TYPE x_tunnel_client_channel_rtt_seconds gauge\n")
+	pool.wsConnsMu.RLock()
+	defer pool.wsConnsMu.RUnlock()
+	for i := range pool.channelRTT {
+		up := 0
+		if i < len(pool.smuxConns) && pool.smuxConns[i] != nil && !pool.smuxConns[i].IsClosed() {
+			up = 1
+		}
+		rttSeconds := float64(atomic.LoadInt64(&pool.channelRTT[i])) / float64(time.Second)
+		channelID := i + 1
+		fmt.Fprintf(w, "x_tunnel_client_channel_up{channel=\"%d\"} %d\n", channelID, up)
+		fmt.Fprintf(w, "x_tunnel_client_channel_rtt_seconds{channel=\"%d\"} %.9f\n", channelID, rttSeconds)
+	}
 }
 
 func countServerSessions() int {

@@ -200,6 +200,7 @@ func TestWriteMetrics(t *testing.T) {
 	oldClientProtocolOK := atomic.LoadUint64(&clientProtocolOKSeq)
 	oldClientProtocolLegacy := atomic.LoadUint64(&clientProtocolLegacySeq)
 	oldClientProtocolFailures := atomic.LoadUint64(&clientProtocolFailureSeq)
+	oldPool := echPool
 	defer func() {
 		atomic.StoreUint64(&serverStreamSeq, oldStreams)
 		atomic.StoreUint64(&udpAssociationSeq, oldUDP)
@@ -217,6 +218,7 @@ func TestWriteMetrics(t *testing.T) {
 		atomic.StoreUint64(&clientProtocolOKSeq, oldClientProtocolOK)
 		atomic.StoreUint64(&clientProtocolLegacySeq, oldClientProtocolLegacy)
 		atomic.StoreUint64(&clientProtocolFailureSeq, oldClientProtocolFailures)
+		echPool = oldPool
 		serverSessions.Delete("metrics-test")
 	}()
 	atomic.StoreUint64(&serverStreamSeq, 7)
@@ -240,6 +242,11 @@ func TestWriteMetrics(t *testing.T) {
 		channels:      map[uint64]*WSChannel{1: &WSChannel{id: 1}, 2: &WSChannel{id: 2}},
 		activeStreams: 5,
 	})
+	_, clientSession := newProtocolNegotiationSmuxPair(t)
+	echPool = &ECHPool{
+		smuxConns:  []*smux.Session{clientSession, nil},
+		channelRTT: []int64{int64(25 * time.Millisecond), 0},
+	}
 
 	var buf bytes.Buffer
 	writeMetrics(&buf)
@@ -264,6 +271,10 @@ func TestWriteMetrics(t *testing.T) {
 		"x_tunnel_server_sessions 1",
 		"x_tunnel_server_channels 2",
 		"x_tunnel_server_active_streams 5",
+		"x_tunnel_client_channel_up{channel=\"1\"} 1",
+		"x_tunnel_client_channel_rtt_seconds{channel=\"1\"} 0.025000000",
+		"x_tunnel_client_channel_up{channel=\"2\"} 0",
+		"x_tunnel_client_channel_rtt_seconds{channel=\"2\"} 0.000000000",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("metrics output missing %q:\n%s", want, got)

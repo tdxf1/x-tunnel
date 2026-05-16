@@ -2961,3 +2961,22 @@ Review:
 
 - The SOCKS5 UDP loop now has focused coverage for the default blocked-port behavior used to drop UDP/443 traffic.
 - The test proves blocked packets do not bind the association target or open a UDP smux stream.
+
+Post Phase 8 client channel metrics:
+
+- [x] Export per-client-channel up/down state in `/metrics`.
+- [x] Export per-client-channel RTT in seconds using the existing RTT probe state.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `go test -run 'TestWriteMetrics|TestRunMetricsServerReturnsOnListenError' -count=1 ./...`: pass.
+- `git diff --check`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 76.8% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- `/metrics` now exports `x_tunnel_client_channel_up{channel="N"}` for each client pool slot.
+- `/metrics` also exports `x_tunnel_client_channel_rtt_seconds{channel="N"}` from the existing atomic RTT probe state without exposing target IPs or client IDs.
