@@ -1053,7 +1053,7 @@ Post Phase 8 upstream SOCKS5 response header validation:
 Verification:
 
 - `git diff --check`: pass.
-- `go test -run 'Test(Socks5UserPassAuthSrvRejectsInvalidResponseVersion|Socks5ConnectRejectsInvalidResponseHeader|NewSOCKS5UDPRelayRejectsInvalidAssociateResponse)' -count=1 ./...`: pass.
+- `go test -run 'Test(Socks5UserPassAuthSrv|Socks5Connect|NewSOCKS5UDPRelay)' -count=1 ./...`: pass.
 - `go test -count=1 ./...`: pass.
 - `go test -cover -count=1 ./...`: pass, `coverage: 47.0% of statements`.
 - `go test -race -count=1 ./...`: pass.
