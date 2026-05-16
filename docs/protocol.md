@@ -38,6 +38,8 @@ Supported schemes:
 
 For `wss://`, the client uses TLS 1.3. ECH can be enabled by default and disabled with fallback mode. `-insecure` disables certificate verification for standard TLS fallback behavior.
 
+ECH configuration is loaded from HTTPS DNS records before the client dials a non-fallback `wss://` server. The `-dns` resolver may be an HTTP/HTTPS DoH URL or a UDP DNS `host[:port]`; resolver authorities must be valid hostnames or IP literals, with valid ports when present, and DoH URLs must not include userinfo. DNS responses are accepted only when they are actual responses (`QR=1`) with `RCODE=0`. UDP DNS reads use the DNS message size limit, matching DoH response handling, so larger HTTPS/ECH records are not truncated at small transport buffers.
+
 Authentication, when configured, uses the `Sec-WebSocket-Protocol` header:
 
 ```text

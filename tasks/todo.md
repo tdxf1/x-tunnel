@@ -2114,6 +2114,26 @@ Review:
 - Client TCP stream opening now has direct coverage for the negotiated TCPStatus OK branch.
 - The test validates the outbound open header and returned channel metadata before closing the stream.
 
+Post Phase 8 DNS ECH protocol docs:
+
+- [x] Document ECH DNS lookup transports and resolver URL validation.
+- [x] Document DNS response status requirements: QR response bit and RCODE zero.
+- [x] Document UDP DNS response sizing behavior.
+- [x] Run docs-focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `rg -n "ECH configuration|QR=1|RCODE=0|DNS message size" docs/protocol.md`: pass.
+- `go test -run 'Test(ParseDNSResponseRejectsInvalidStatus|QueryDNSUDPReadsLargeECHResponse|ValidateECHLookupConfig)' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 68.2% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- Protocol docs now describe ECH resolver transports, DoH authority restrictions, DNS response status requirements, and UDP DNS message-size reads.
+
 Commit frequency and quality assessment:
 
 - [x] Collect commit cadence, author, and churn metrics from Git history.
