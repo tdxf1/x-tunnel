@@ -98,7 +98,7 @@ Verification:
 ### Phase 7: Refactor Only Where It Pays, 15:30-17:30
 
 - [x] Extract pure protocol encoding/decoding into a small file/package if tests show a clean boundary.
-- [ ] Extract SOCKS5 parsing/building helpers if it reduces single-file risk without broad churn.
+- [x] Extract SOCKS5 parsing/building helpers if it reduces single-file risk without broad churn.
 - [x] Avoid broad architectural rewrites unless current changes become hard to verify.
 
 Verification:
@@ -1360,3 +1360,43 @@ Review:
 
 - `wsNetConn.Write` now uses counted full-write behavior while preserving the `net.Conn` byte-count return contract.
 - The shared counted writer keeps the original `writeAll` API simple for protocol encoders.
+
+Post Phase 8 SOCKS5 CONNECT target validation:
+
+- [x] Reject invalid upstream SOCKS5 CONNECT `host:port` targets before writing a request.
+- [x] Reject local SOCKS5 CONNECT empty or malformed domain targets before opening a remote stream.
+- [x] Add focused tests for empty domain and invalid host targets.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'Test(Socks5ConnectRejectsInvalidTargetPort|ReadLocalSOCKS5RequestMalformedReplyStatus|ReadLocalSOCKS5Request|HandleSOCKS5RejectsZeroConnectPort)' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 54.2% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- Upstream SOCKS5 CONNECT now rejects malformed `host:port` targets before writing any request bytes.
+- Local SOCKS5 CONNECT parsing maps empty or invalid domain-style targets to a failed SOCKS5 reply instead of opening a stream.
+
+Post Phase 8 local SOCKS5 request parser extraction:
+
+- [x] Extract local SOCKS5 command/address/port parsing from `handleSOCKS5`.
+- [x] Preserve existing SOCKS5 reply codes for bad RSV, unsupported ATYP, zero CONNECT port, and unsupported command.
+- [x] Add focused parser tests for valid IPv4/domain/IPv6 requests and malformed request statuses.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'Test(ReadLocalSOCKS5Request|HandleSOCKS5Rejects|HandleSOCKS5MethodSelection|HandleSOCKS5UserPassAuth|HandleSOCKS5UDPAssociate)' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 54.2% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- `handleSOCKS5` now delegates command/address/port parsing to `readLocalSOCKS5Request`, keeping policy and dispatch logic separate from byte parsing.
+- Parser tests cover IPv4, domain, IPv6, bad RSV, unsupported ATYP, zero CONNECT port, and truncated input.

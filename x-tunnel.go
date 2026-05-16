@@ -3568,66 +3568,27 @@ func handleSOCKS5(c net.Conn, cfgp *ProxyConfig) {
 		}
 	}
 
-	head := make([]byte, 4)
-	if _, err := io.ReadFull(c, head); err != nil {
-		return
-	}
-	if head[2] != 0x00 {
-		_ = writeSOCKS5Reply(c, 0x01)
-		return
-	}
-	var target string
-	switch head[3] {
-	case 0x01:
-		b := make([]byte, 4)
-		if _, err := io.ReadFull(c, b); err != nil {
-			return
+	req, reply, err := readLocalSOCKS5Request(c)
+	if err != nil {
+		if reply != 0 {
+			_ = writeSOCKS5Reply(c, reply)
 		}
-		target = net.IP(b).String()
-	case 0x03:
-		b := make([]byte, 1)
-		if _, err := io.ReadFull(c, b); err != nil {
-			return
-		}
-		addr := make([]byte, b[0])
-		if _, err := io.ReadFull(c, addr); err != nil {
-			return
-		}
-		target = string(addr)
-	case 0x04:
-		b := make([]byte, 16)
-		if _, err := io.ReadFull(c, b); err != nil {
-			return
-		}
-		target = net.IP(b).String()
-	default:
-		_ = writeSOCKS5Reply(c, 0x08)
 		return
 	}
-	pb := make([]byte, 2)
-	if _, err := io.ReadFull(c, pb); err != nil {
-		return
-	}
-	port := int(pb[0])<<8 | int(pb[1])
-	if head[1] == 0x01 && port == 0 {
-		_ = writeSOCKS5Reply(c, 0x04)
-		return
-	}
-	target = net.JoinHostPort(target, fmt.Sprintf("%d", port))
 
 	// 增强过滤逻辑：解析 host 判断是否为 IP，从而覆盖 ATYP=0x03 但内容为 IP 的情况
-	host, _, _ := net.SplitHostPort(target)
+	host, _, _ := net.SplitHostPort(req.target)
 	ip := net.ParseIP(host)
 
-	if head[1] == 0x01 {
+	if req.command == 0x01 {
 		if ipStrategy == IPStrategyIPv4Only {
-			if head[3] == 0x04 || (ip != nil && ip.To4() == nil) {
+			if req.atyp == 0x04 || (ip != nil && ip.To4() == nil) {
 				_ = writeSOCKS5Reply(c, 0x02)
 				return
 			}
 		}
 		if ipStrategy == IPStrategyIPv6Only {
-			if head[3] == 0x01 || (ip != nil && ip.To4() != nil) {
+			if req.atyp == 0x01 || (ip != nil && ip.To4() != nil) {
 				_ = writeSOCKS5Reply(c, 0x02)
 				return
 			}
@@ -3636,13 +3597,87 @@ func handleSOCKS5(c net.Conn, cfgp *ProxyConfig) {
 
 	_ = c.SetDeadline(time.Time{})
 
-	switch head[1] {
+	switch req.command {
 	case 0x01:
-		handleSOCKS5Connect(c, target)
+		handleSOCKS5Connect(c, req.target)
 	case 0x03:
 		handleSOCKS5UDP(c, cfgp)
 	default:
 		_ = writeSOCKS5Reply(c, 0x07)
+	}
+}
+
+type localSOCKS5Request struct {
+	command byte
+	atyp    byte
+	target  string
+}
+
+func readLocalSOCKS5Request(r io.Reader) (localSOCKS5Request, byte, error) {
+	head := make([]byte, 4)
+	if _, err := io.ReadFull(r, head); err != nil {
+		return localSOCKS5Request{}, 0, err
+	}
+	if head[2] != 0x00 {
+		return localSOCKS5Request{}, 0x01, fmt.Errorf("SOCKS5 请求 RSV 必须为 0")
+	}
+
+	host, err := readLocalSOCKS5RequestHost(r, head[3])
+	if err != nil {
+		if head[3] != 0x01 && head[3] != 0x03 && head[3] != 0x04 {
+			return localSOCKS5Request{}, 0x08, err
+		}
+		return localSOCKS5Request{}, 0, err
+	}
+
+	pb := make([]byte, 2)
+	if _, err := io.ReadFull(r, pb); err != nil {
+		return localSOCKS5Request{}, 0, err
+	}
+	port := int(pb[0])<<8 | int(pb[1])
+	if head[1] == 0x01 && port == 0 {
+		return localSOCKS5Request{}, 0x04, fmt.Errorf("SOCKS5 CONNECT 目标端口不能为 0")
+	}
+	target := net.JoinHostPort(host, strconv.Itoa(port))
+	if head[1] == 0x01 {
+		if err := validateHostPort(target); err != nil {
+			return localSOCKS5Request{}, 0x04, fmt.Errorf("SOCKS5 CONNECT目标无效: %w", err)
+		}
+	}
+
+	return localSOCKS5Request{
+		command: head[1],
+		atyp:    head[3],
+		target:  target,
+	}, 0, nil
+}
+
+func readLocalSOCKS5RequestHost(r io.Reader, atyp byte) (string, error) {
+	switch atyp {
+	case 0x01:
+		b := make([]byte, 4)
+		if _, err := io.ReadFull(r, b); err != nil {
+			return "", err
+		}
+		return net.IP(b).String(), nil
+	case 0x03:
+		b := make([]byte, 1)
+		if _, err := io.ReadFull(r, b); err != nil {
+			return "", err
+		}
+		addr := make([]byte, b[0])
+		if _, err := io.ReadFull(r, addr); err != nil {
+			return "", err
+		}
+		return string(addr), nil
+	case 0x04:
+		b := make([]byte, 16)
+		if _, err := io.ReadFull(r, b); err != nil {
+			return "", err
+		}
+		return net.IP(b).String(), nil
+	default:
+		return "", fmt.Errorf("SOCKS5 地址类型不支持: %d", atyp)
 	}
 }
 

@@ -1562,6 +1562,8 @@ func TestSocks5ConnectHandlesProgressiveShortWrites(t *testing.T) {
 
 func TestSocks5ConnectRejectsInvalidTargetPort(t *testing.T) {
 	tests := []string{
+		":80",
+		"bad host:80",
 		"127.0.0.1:abc",
 		"127.0.0.1:0",
 		"127.0.0.1:65536",
@@ -1732,6 +1734,102 @@ func TestHandleSOCKS5UserPassAuthRejectsInvalidVersion(t *testing.T) {
 	}
 	if err := <-errCh; err == nil {
 		t.Fatal("handleSOCKS5UserPassAuth accepted invalid auth version")
+	}
+}
+
+func TestReadLocalSOCKS5Request(t *testing.T) {
+	tests := []struct {
+		name       string
+		raw        []byte
+		command    byte
+		atyp       byte
+		wantTarget string
+	}{
+		{
+			name:       "IPv4 connect",
+			raw:        []byte{0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1, 0, 80},
+			command:    0x01,
+			atyp:       0x01,
+			wantTarget: "127.0.0.1:80",
+		},
+		{
+			name:       "domain UDP associate",
+			raw:        append([]byte{0x05, 0x03, 0x00, 0x03, 11}, append([]byte("example.com"), 0, 53)...),
+			command:    0x03,
+			atyp:       0x03,
+			wantTarget: "example.com:53",
+		},
+		{
+			name:       "IPv6 connect",
+			raw:        []byte{0x05, 0x01, 0x00, 0x04, 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0x01, 0xbb},
+			command:    0x01,
+			atyp:       0x04,
+			wantTarget: "[2001:db8::1]:443",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, reply, err := readLocalSOCKS5Request(bytes.NewReader(tt.raw))
+			if err != nil {
+				t.Fatalf("readLocalSOCKS5Request returned error: %v", err)
+			}
+			if reply != 0 {
+				t.Fatalf("readLocalSOCKS5Request reply = 0x%02x, want 0", reply)
+			}
+			if req.command != tt.command || req.atyp != tt.atyp || req.target != tt.wantTarget {
+				t.Fatalf("readLocalSOCKS5Request = command 0x%02x atyp 0x%02x target %q, want command 0x%02x atyp 0x%02x target %q", req.command, req.atyp, req.target, tt.command, tt.atyp, tt.wantTarget)
+			}
+		})
+	}
+}
+
+func TestReadLocalSOCKS5RequestMalformedReplyStatus(t *testing.T) {
+	tests := []struct {
+		name      string
+		raw       []byte
+		wantReply byte
+	}{
+		{
+			name:      "nonzero RSV",
+			raw:       []byte{0x05, 0x01, 0x01, 0x01, 127, 0, 0, 1, 0, 80},
+			wantReply: 0x01,
+		},
+		{
+			name:      "unsupported ATYP",
+			raw:       []byte{0x05, 0x01, 0x00, 0x09},
+			wantReply: 0x08,
+		},
+		{
+			name:      "zero CONNECT port",
+			raw:       []byte{0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1, 0, 0},
+			wantReply: 0x04,
+		},
+		{
+			name:      "empty CONNECT domain",
+			raw:       []byte{0x05, 0x01, 0x00, 0x03, 0, 0, 80},
+			wantReply: 0x04,
+		},
+		{
+			name:      "whitespace CONNECT domain",
+			raw:       append([]byte{0x05, 0x01, 0x00, 0x03, 8}, append([]byte("bad host"), 0, 80)...),
+			wantReply: 0x04,
+		},
+		{
+			name:      "truncated address",
+			raw:       []byte{0x05, 0x01, 0x00, 0x01, 127},
+			wantReply: 0x00,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, reply, err := readLocalSOCKS5Request(bytes.NewReader(tt.raw)); err == nil {
+				t.Fatal("readLocalSOCKS5Request accepted malformed request")
+			} else if reply != tt.wantReply {
+				t.Fatalf("readLocalSOCKS5Request reply = 0x%02x, want 0x%02x", reply, tt.wantReply)
+			}
+		})
 	}
 }
 
