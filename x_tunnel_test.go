@@ -2033,6 +2033,39 @@ func TestSOCKS5UDPRelayReadRejectsOversizedPayload(t *testing.T) {
 	}
 }
 
+func TestSOCKS5UDPRelayReadUnblocksOnClose(t *testing.T) {
+	localConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("listen local UDP: %v", err)
+	}
+	tcpServer, tcpClient := net.Pipe()
+	defer tcpClient.Close()
+	relay := &SOCKS5UDPRelay{
+		tcpConn: tcpServer,
+		udpConn: localConn,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 16)
+		_, _, err := relay.Read(buf)
+		done <- err
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	if err := relay.Close(); err != nil {
+		t.Fatalf("SOCKS5UDPRelay.Close returned error: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("SOCKS5UDPRelay.Read returned nil after Close")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("SOCKS5UDPRelay.Read did not unblock after Close")
+	}
+}
+
 func startSOCKS5UDPAssociateResponse(t *testing.T, response []byte) (string, func()) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

@@ -1805,7 +1805,10 @@ func (r *SOCKS5UDPRelay) Read(buffer []byte) (int, string, error) {
 	if r == nil || r.udpConn == nil {
 		return 0, "", errors.New("SOCKS5 UDP relay 未初始化")
 	}
-	if r.closed {
+	r.mu.Lock()
+	closed := r.closed
+	r.mu.Unlock()
+	if closed {
 		return 0, "", errors.New("closed")
 	}
 	tmpPtr := bufPool.Get().(*[]byte)

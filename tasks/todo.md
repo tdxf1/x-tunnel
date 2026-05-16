@@ -1691,6 +1691,26 @@ Review:
 
 - `SOCKS5UDPRelay.Read` now returns an explicit oversize error instead of returning a length larger than the caller buffer.
 
+Post Phase 8 SOCKS5 UDP relay close/read race:
+
+- [x] Synchronize `SOCKS5UDPRelay.Read` access to the relay closed state.
+- [x] Add focused coverage proving `Close` unblocks a pending `Read`.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'TestSOCKS5UDPRelay(ReadUnblocksOnClose|ReadRejectsOversizedPayload|RoundTripAndClose)' -count=1 ./...`: pass.
+- `go test -race -run 'TestSOCKS5UDPRelayReadUnblocksOnClose' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 60.1% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- `SOCKS5UDPRelay.Read` now snapshots `closed` under the relay mutex, matching `Write` and `Close`.
+- The close/unblock regression covers pending UDP reads during relay shutdown.
+
 Post Phase 8 hostname trailing-dot compatibility:
 
 - [x] Preserve valid trailing-dot DNS hostnames while rejecting malformed hostnames.
