@@ -3965,6 +3965,17 @@ func TestSmuxOpenHeaderRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSmuxOpenHeaderWireBytes(t *testing.T) {
+	var buf bytes.Buffer
+	if err := writeSmuxOpenHeader(&buf, streamKindTCP, IPStrategyPv6Pv4, "h:1"); err != nil {
+		t.Fatalf("writeSmuxOpenHeader returned error: %v", err)
+	}
+	want := []byte{0x01, 0x04, 0x00, 0x03, 'h', ':', '1'}
+	if !bytes.Equal(buf.Bytes(), want) {
+		t.Fatalf("smux open header bytes = %x, want %x", buf.Bytes(), want)
+	}
+}
+
 func TestSmuxOpenHeaderRejectsOversizedTarget(t *testing.T) {
 	err := writeSmuxOpenHeader(io.Discard, streamKindTCP, IPStrategyDefault, strings.Repeat("x", 65536))
 	if err == nil {
@@ -4676,6 +4687,23 @@ func TestProtocolHelloRoundTrip(t *testing.T) {
 	}
 }
 
+func TestProtocolHelloWireBytes(t *testing.T) {
+	var buf bytes.Buffer
+	hello := ProtocolHello{
+		Version:      protocolVersion,
+		Status:       protocolStatusNoCommonCapabilities,
+		Capabilities: protocolCapabilityTCP | protocolCapabilityPing,
+		Message:      "no",
+	}
+	if err := writeProtocolHello(&buf, hello); err != nil {
+		t.Fatalf("writeProtocolHello returned error: %v", err)
+	}
+	want := []byte{'X', 'T', 'U', 'N', 0x01, 0x02, 0x00, 0x02, 0x00, 0x00, 0x00, 0x05, 'n', 'o'}
+	if !bytes.Equal(buf.Bytes(), want) {
+		t.Fatalf("protocol hello bytes = %x, want %x", buf.Bytes(), want)
+	}
+}
+
 func TestProtocolHelloRejectsOversizedMessage(t *testing.T) {
 	err := writeProtocolHello(io.Discard, ProtocolHello{Message: strings.Repeat("x", 65536)})
 	if err == nil {
@@ -4694,6 +4722,17 @@ func TestTCPOpenStatusRoundTrip(t *testing.T) {
 	}
 	if status != tcpOpenStatusError || message != "dial failed" {
 		t.Fatalf("readTCPOpenStatus = status %d message %q", status, message)
+	}
+}
+
+func TestTCPOpenStatusWireBytes(t *testing.T) {
+	var buf bytes.Buffer
+	if err := writeTCPOpenStatus(&buf, tcpOpenStatusError, "bad"); err != nil {
+		t.Fatalf("writeTCPOpenStatus returned error: %v", err)
+	}
+	want := []byte{0x01, 0x00, 0x03, 'b', 'a', 'd'}
+	if !bytes.Equal(buf.Bytes(), want) {
+		t.Fatalf("TCP open status bytes = %x, want %x", buf.Bytes(), want)
 	}
 }
 

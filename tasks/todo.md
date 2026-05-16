@@ -2257,3 +2257,23 @@ Review:
 
 - TCP stream opening now has explicit compatibility coverage for legacy channels without `TCPStatus`.
 - The test proves raw request and response bytes can flow immediately after the open header without a status frame.
+
+Post Phase 8 protocol wire-byte golden tests:
+
+- [x] Add golden bytes for protocol hello frames.
+- [x] Add golden bytes for TCP open status frames.
+- [x] Add golden bytes for smux open headers.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'Test(ProtocolHelloWireBytes|TCPOpenStatusWireBytes|SmuxOpenHeaderWireBytes)' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 70.9% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- Protocol hello, TCP open status, and smux open header writers now have fixed byte-level golden tests.
+- These tests complement round-trip coverage by detecting accidental wire-format drift even if readers and writers change together.
