@@ -2122,6 +2122,65 @@ func TestHandleWebSocketChannelNegotiatesHelloAndCleansUp(t *testing.T) {
 	}
 }
 
+func TestHandleWebSocketChannelReturnsTCPStatusWhenStreamLimitReached(t *testing.T) {
+	oldCfg := cfg
+	oldMaxStreams := maxStreamsPerClient
+	t.Cleanup(func() {
+		cfg = oldCfg
+		maxStreamsPerClient = oldMaxStreams
+	})
+	cfg.RTTProbeTimeout = time.Second
+	maxStreamsPerClient = 1
+
+	clientConn, serverConn := newTestWSNetConnPair(t)
+	session := &ClientSession{
+		clientID:      "stream-limit-status-test",
+		channels:      make(map[uint64]*WSChannel),
+		activeStreams: 1,
+	}
+	ch := &WSChannel{id: 1, conn: serverConn.ws, session: session}
+	atomic.StoreUint32(&ch.capabilities, protocolCapabilityTCPStatus)
+
+	done := make(chan struct{})
+	go func() {
+		handleWebSocketChannel(ch)
+		close(done)
+	}()
+
+	clientSession, err := smux.Client(clientConn, nil)
+	if err != nil {
+		t.Fatalf("create smux client: %v", err)
+	}
+	stream, err := clientSession.OpenStream()
+	if err != nil {
+		_ = clientSession.Close()
+		t.Fatalf("open smux stream: %v", err)
+	}
+	_ = stream.SetDeadline(time.Now().Add(time.Second))
+	if err := writeSmuxOpenHeader(stream, streamKindTCP, IPStrategyDefault, "127.0.0.1:80"); err != nil {
+		_ = clientSession.Close()
+		t.Fatalf("write TCP open header: %v", err)
+	}
+	status, msg, err := readTCPOpenStatus(stream)
+	if err != nil {
+		_ = clientSession.Close()
+		t.Fatalf("read TCP open status: %v", err)
+	}
+	if status != tcpOpenStatusError || !strings.Contains(msg, "max streams") {
+		_ = clientSession.Close()
+		t.Fatalf("TCP open status = %d %q, want error containing max streams", status, msg)
+	}
+
+	_ = stream.Close()
+	_ = clientSession.Close()
+	_ = clientConn.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("handleWebSocketChannel did not exit after client close")
+	}
+}
+
 func TestDialWebSocketWithECHWSMetadata(t *testing.T) {
 	oldCfg := cfg
 	oldToken := token

@@ -2630,3 +2630,23 @@ Review:
 
 - WebSocket server handshake metadata is parsed before upgrade so malformed metadata can return HTTP 400 instead of being silently coerced.
 - `client_id` now rejects oversized, whitespace/control, and non-ASCII values; `channel_id` now rejects non-decimal and overflowing values.
+
+Post Phase 8 max-streams TCPStatus rejection:
+
+- [x] When a client exceeds `max-streams`, inspect the rejected stream header with a short deadline.
+- [x] Return TCP open status error for TCP streams on channels that negotiated `TCPStatus`.
+- [x] Keep UDP, unknown, legacy, and unreadable rejected streams as close-only behavior.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `go test -run 'TestHandleWebSocketChannel(ReturnsTCPStatusWhenStreamLimitReached|NegotiatesHelloAndCleansUp)|TestECHPoolOpenTCPStream|TestIsLegacyProtocolHelloError' -count=1 ./...`: pass.
+- `git diff --check`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 75.5% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- `max-streams` rejection now gives modern TCP clients a protocol-level open failure instead of a bare stream close.
+- The rejected-stream header read is bounded to at most 200ms, preserving close-only behavior for UDP, unknown, legacy, and unreadable streams.

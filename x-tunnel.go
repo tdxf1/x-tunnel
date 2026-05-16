@@ -2869,10 +2869,27 @@ func handleWebSocketChannel(ch *WSChannel) {
 		if active, ok := session.tryAcquireStream(); !ok {
 			atomic.AddUint64(&serverStreamRejectSeq, 1)
 			log.Printf("[服务端] 客户ID:%s 通道:%d 拒绝新 stream: active=%d max-streams=%d", shortID(session.clientID), ch.id, active, maxStreamsPerClient)
-			_ = stream.Close()
+			rejectSmuxStreamDueToLimit(ch, stream)
 			continue
 		}
 		go handleSmuxStream(session, ch, stream)
+	}
+}
+
+func rejectSmuxStreamDueToLimit(ch *WSChannel, stream *smux.Stream) {
+	defer stream.Close()
+	timeout := cfg.RTTProbeTimeout
+	if timeout <= 0 || timeout > 200*time.Millisecond {
+		timeout = 200 * time.Millisecond
+	}
+	_ = stream.SetDeadline(time.Now().Add(timeout))
+	kind, _, _, err := readSmuxOpenHeader(stream)
+	_ = stream.SetDeadline(time.Time{})
+	if err != nil {
+		return
+	}
+	if kind == streamKindTCP && atomic.LoadUint32(&ch.capabilities)&protocolCapabilityTCPStatus != 0 {
+		_ = writeTCPOpenStatus(stream, tcpOpenStatusError, "max streams reached")
 	}
 }
 
