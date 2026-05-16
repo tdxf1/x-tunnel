@@ -2583,6 +2583,38 @@ func TestDialViaSocks5AuthProxy(t *testing.T) {
 	}
 }
 
+func TestDialViaSocks5FallsBackToDirectDial(t *testing.T) {
+	targetAddr := startOneShotTCPEcho(t)
+
+	oldConfig := socks5Config
+	oldCfg := cfg
+	t.Cleanup(func() {
+		socks5Config = oldConfig
+		cfg = oldCfg
+	})
+	cfg.DialTimeout = time.Second
+	socks5Config = nil
+
+	conn, err := dialViaSocks5("tcp", targetAddr)
+	if err != nil {
+		t.Fatalf("dialViaSocks5 direct returned error: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set direct conn deadline: %v", err)
+	}
+	if _, err := conn.Write([]byte("direct")); err != nil {
+		t.Fatalf("write direct conn: %v", err)
+	}
+	reply := make([]byte, len("echo:direct"))
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		t.Fatalf("read direct reply: %v", err)
+	}
+	if string(reply) != "echo:direct" {
+		t.Fatalf("direct reply = %q, want echo:direct", reply)
+	}
+}
+
 func TestDialTCPWithStrategyLiteralIP(t *testing.T) {
 	oldCfg := cfg
 	t.Cleanup(func() { cfg = oldCfg })

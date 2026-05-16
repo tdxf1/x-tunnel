@@ -2769,3 +2769,22 @@ Review:
 
 - Upstream SOCKS5 UDP ASSOCIATE domain-form relay responses now reject empty domain names before UDP address resolution.
 - Domain-form relay responses are covered with a successful `127.0.0.1:port` relay address path.
+
+Post Phase 8 SOCKS5 direct fallback coverage:
+
+- [x] Cover `dialViaSocks5` direct TCP dialing when no upstream SOCKS5 config is set.
+- [x] Prove the fallback path can exchange bytes with a local TCP echo target.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `go test -run 'TestDialViaSocks5|TestSocks5Handshake|TestSocks5Connect' -count=1 ./...`: pass.
+- `git diff --check`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 76.1% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- `dialViaSocks5` now has local loopback proof for the no-proxy fallback path.
+- The fallback test exchanges bytes through a real TCP echo target, complementing the authenticated SOCKS5 proxy integration coverage.
