@@ -2358,6 +2358,58 @@ func TestHandleHTTPRejectsProxyAuth(t *testing.T) {
 	}
 }
 
+func TestSanitizeHTTPProxyRequestClearsCloseState(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/path", nil)
+	req.RequestURI = "http://example.com/path"
+	req.Header.Set("Connection", "close, X-Hop")
+	req.Header.Set("X-Hop", "drop-me")
+	req.Close = true
+
+	sanitizeHTTPProxyRequest(req)
+	if req.Close {
+		t.Fatal("sanitizeHTTPProxyRequest left req.Close set")
+	}
+	req.RequestURI = ""
+	req.URL.Scheme = ""
+	req.URL.Host = ""
+
+	var buf bytes.Buffer
+	if err := req.Write(&buf); err != nil {
+		t.Fatalf("write sanitized request: %v", err)
+	}
+	for _, forbidden := range []string{"Connection: close", "X-Hop: drop-me"} {
+		if strings.Contains(buf.String(), forbidden) {
+			t.Fatalf("sanitized request still contains %q:\n%s", forbidden, buf.String())
+		}
+	}
+}
+
+func TestValidHTTPProxyBasicAuth(t *testing.T) {
+	token := base64.StdEncoding.EncodeToString([]byte("user:pass"))
+	tests := []struct {
+		name string
+		auth string
+		want bool
+	}{
+		{name: "standard", auth: "Basic " + token, want: true},
+		{name: "case insensitive scheme", auth: "bAsIc " + token, want: true},
+		{name: "optional whitespace", auth: "Basic \t " + token, want: true},
+		{name: "leading and trailing whitespace", auth: "  Basic\t" + token + "  ", want: true},
+		{name: "wrong credentials", auth: "Basic " + base64.StdEncoding.EncodeToString([]byte("user:wrong")), want: false},
+		{name: "invalid base64", auth: "Basic not-base64", want: false},
+		{name: "extra fields", auth: "Basic " + token + " extra", want: false},
+		{name: "wrong scheme", auth: "Bearer " + token, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := validHTTPProxyBasicAuth(tt.auth, "user", "pass"); got != tt.want {
+				t.Fatalf("validHTTPProxyBasicAuth(%q) = %v, want %v", tt.auth, got, tt.want)
+			}
+		})
+	}
+}
+
 func handleHTTPResponse(t *testing.T, request string, cfgp *ProxyConfig) *http.Response {
 	t.Helper()
 	server, client := net.Pipe()
@@ -2375,6 +2427,30 @@ func handleHTTPResponse(t *testing.T, request string, cfgp *ProxyConfig) *http.R
 		t.Fatalf("read HTTP proxy response: %v", err)
 	}
 	return resp
+}
+
+func TestWebSocketRequestHasToken(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		want   bool
+	}{
+		{name: "single token", header: "secret-token", want: true},
+		{name: "token in list", header: "other, secret-token", want: true},
+		{name: "token later in list with spaces", header: "other,  secret-token , final", want: true},
+		{name: "missing token", header: "other, final", want: false},
+		{name: "partial token", header: "secret-token-extra", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "http://example.com/tunnel", nil)
+			req.Header.Set("Sec-WebSocket-Protocol", tt.header)
+			if got := webSocketRequestHasToken(req, "secret-token"); got != tt.want {
+				t.Fatalf("webSocketRequestHasToken(%q) = %v, want %v", tt.header, got, tt.want)
+			}
+		})
+	}
 }
 
 func TestHTTPProxyTarget(t *testing.T) {

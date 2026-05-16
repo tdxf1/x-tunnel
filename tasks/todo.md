@@ -1565,3 +1565,23 @@ Review:
 
 - Ordinary HTTP proxy forwarding now appends `Via: 1.1 x-tunnel` while preserving upstream `Via` values.
 - The authenticated proxy integration proves the origin sees both upstream and x-tunnel `Via` values on ordinary HTTP, while CONNECT-originated request bytes stay free of proxy-added `Via`.
+
+Post Phase 8 HTTP/WebSocket auth interop:
+
+- [x] Accept WebSocket token authentication when the client offers the token inside a subprotocol list.
+- [x] Parse local HTTP proxy Basic auth case-insensitively and tolerate normal optional whitespace.
+- [x] Clear request close state so stripped `Connection: close` is not regenerated on forwarded HTTP proxy requests.
+- [x] Add focused unit coverage and run full/coverage/race verification before commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'Test(WebSocketRequestHasToken|ValidHTTPProxyBasicAuth|SanitizeHTTPProxyRequestClearsCloseState|HandleHTTPRejectsProxyAuth)$' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 57.2% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- WebSocket token auth now accepts a valid token anywhere in the offered `Sec-WebSocket-Protocol` list while still rejecting partial or missing tokens.
+- Local HTTP proxy auth now accepts normal Basic auth casing/whitespace variants, and sanitized ordinary HTTP forwarding no longer regenerates `Connection: close` after stripping hop-by-hop headers.

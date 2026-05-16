@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -2429,7 +2430,7 @@ func runWebSocketServer(ctx context.Context, addr string, allowedNets []*net.IPN
 			return
 		}
 		if token != "" {
-			if r.Header.Get("Sec-WebSocket-Protocol") != token {
+			if !webSocketRequestHasToken(r, token) {
 				atomic.AddUint64(&serverAuthRejectSeq, 1)
 				log.Printf("[服务端] Token 认证失败，来源 IP: %s", clientIP)
 				http.Error(w, "未授权", http.StatusUnauthorized)
@@ -4066,21 +4067,12 @@ func handleHTTP(c net.Conn, cfgp *ProxyConfig) {
 	}
 	_ = c.SetDeadline(time.Time{})
 	if cfgp.Username != "" {
-		auth := req.Header.Get("Proxy-Authorization")
-		ok := false
-		if strings.HasPrefix(auth, "Basic ") {
-			p, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(auth, "Basic "))
-			pair := strings.SplitN(string(p), ":", 2)
-			if len(pair) == 2 && pair[0] == cfgp.Username && pair[1] == cfgp.Password {
-				ok = true
-			}
-		}
-		if !ok {
+		if !validHTTPProxyBasicAuth(req.Header.Get("Proxy-Authorization"), cfgp.Username, cfgp.Password) {
 			_ = writeHTTPProxyResponse(c, "HTTP/1.1 407 需要认证\r\nProxy-Authenticate: Basic realm=\"代理\"\r\n\r\n")
 			return
 		}
 	}
-	stripHTTPProxyHeaders(req.Header)
+	sanitizeHTTPProxyRequest(req)
 
 	target, err := httpProxyTarget(req)
 	if err != nil {
@@ -4131,6 +4123,28 @@ func writeHTTPProxyResponse(w io.Writer, response string) error {
 	return writeAll(w, []byte(response))
 }
 
+func webSocketRequestHasToken(r *http.Request, want string) bool {
+	for _, offered := range websocket.Subprotocols(r) {
+		if subtle.ConstantTimeCompare([]byte(offered), []byte(want)) == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func validHTTPProxyBasicAuth(auth, username, password string) bool {
+	fields := strings.Fields(auth)
+	if len(fields) != 2 || !strings.EqualFold(fields[0], "Basic") {
+		return false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(fields[1])
+	if err != nil {
+		return false
+	}
+	want := []byte(username + ":" + password)
+	return subtle.ConstantTimeCompare(decoded, want) == 1
+}
+
 var httpHopByHopHeaders = []string{
 	"Connection",
 	"Keep-Alive",
@@ -4160,6 +4174,11 @@ func stripHTTPProxyHeaders(h http.Header) {
 
 func addHTTPProxyViaHeader(h http.Header) {
 	h.Add("Via", httpProxyViaValue)
+}
+
+func sanitizeHTTPProxyRequest(req *http.Request) {
+	stripHTTPProxyHeaders(req.Header)
+	req.Close = false
 }
 
 func forwardBufferedHTTPBytes(br *bufio.Reader, stream io.Writer) error {
