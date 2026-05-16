@@ -1974,6 +1974,26 @@ Review:
 - `ws://` dialing now has direct coverage for token subprotocol negotiation and channel identity query parameters.
 - Unauthorized WebSocket upgrade responses are covered to keep the explicit auth error mapping stable.
 
+Post Phase 8 WebSocket WSS fallback dial coverage:
+
+- [x] Cover `wss://` dialing through the fallback standard-TLS branch.
+- [x] Verify insecure self-signed local TLS can complete a WebSocket upgrade.
+- [x] Preserve token subprotocol and channel metadata assertions on the WSS request.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'TestDialWebSocketWithECH(WSSFallbackInsecure|WSMetadata|MapsUnauthorized)|TestBuildUnifiedTLSConfigBranches' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 66.0% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- `wss://` dialing now has a direct local TLS WebSocket test for the fallback standard-TLS branch.
+- The WSS test proves insecure self-signed TLS can upgrade successfully while still carrying token subprotocol and channel metadata.
+
 Commit frequency and quality assessment:
 
 - [x] Collect commit cadence, author, and churn metrics from Git history.

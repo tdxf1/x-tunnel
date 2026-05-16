@@ -1731,6 +1731,66 @@ func TestDialWebSocketWithECHMapsUnauthorized(t *testing.T) {
 	}
 }
 
+func TestDialWebSocketWithECHWSSFallbackInsecure(t *testing.T) {
+	oldCfg := cfg
+	oldToken := token
+	oldFallback := fallback
+	oldInsecure := insecure
+	t.Cleanup(func() {
+		cfg = oldCfg
+		token = oldToken
+		fallback = oldFallback
+		insecure = oldInsecure
+	})
+	cfg.WSHandshakeTimeout = time.Second
+	cfg.DialTimeout = time.Second
+	cfg.ReadBuf = 1024
+	token = "wss-test-token"
+	fallback = true
+	insecure = true
+
+	type dialRequest struct {
+		clientID    string
+		channelID   string
+		subprotocol string
+	}
+	requests := make(chan dialRequest, 1)
+	upgrader := websocket.Upgrader{
+		CheckOrigin:  func(*http.Request) bool { return true },
+		Subprotocols: []string{"wss-test-token"},
+	}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade wss websocket: %v", err)
+			return
+		}
+		requests <- dialRequest{
+			clientID:    r.URL.Query().Get("client_id"),
+			channelID:   r.URL.Query().Get("channel_id"),
+			subprotocol: conn.Subprotocol(),
+		}
+		_ = conn.Close()
+	}))
+	defer server.Close()
+
+	wssURL := "wss" + strings.TrimPrefix(server.URL, "https")
+	conn, err := dialWebSocketWithECH(wssURL, 1, "", "client-wss", 11)
+	if err != nil {
+		t.Fatalf("dialWebSocketWithECH wss fallback returned error: %v", err)
+	}
+	_ = conn.Close()
+
+	select {
+	case req := <-requests:
+		if req.clientID != "client-wss" || req.channelID != "11" || req.subprotocol != "wss-test-token" {
+			t.Fatalf("wss dial metadata = %#v, want client_id client-wss channel_id 11 subprotocol wss-test-token", req)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for wss dial metadata")
+	}
+}
+
 func TestWSNetConnReadWrite(t *testing.T) {
 	client, server := newTestWSNetConnPair(t)
 	deadline := time.Now().Add(time.Second)
