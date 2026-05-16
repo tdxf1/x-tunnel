@@ -505,6 +505,8 @@ func TestValidateECHLookupConfig(t *testing.T) {
 		server string
 	}{
 		{domain: "cloudflare-ech.com", server: "https://doh.pub/dns-query"},
+		{domain: "cloudflare-ech.com", server: "http://doh.pub:8053/dns-query"},
+		{domain: "cloudflare-ech.com", server: "https://[2001:4860:4860::8888]/dns-query"},
 		{domain: "example.com.", server: "8.8.8.8"},
 		{domain: "example.com", server: "8.8.8.8:53"},
 		{domain: "example.com", server: "[2001:4860:4860::8888]:53"},
@@ -523,6 +525,10 @@ func TestValidateECHLookupConfig(t *testing.T) {
 		{domain: "bad host.example", server: "https://doh.pub/dns-query"},
 		{domain: "example.com", server: ""},
 		{domain: "example.com", server: "https:///dns-query"},
+		{domain: "example.com", server: "https://user:pass@doh.pub/dns-query"},
+		{domain: "example.com", server: "https://bad_host.example/dns-query"},
+		{domain: "example.com", server: "https://doh.pub:0/dns-query"},
+		{domain: "example.com", server: "https://2001:4860:4860::8888/dns-query"},
 		{domain: "example.com", server: "ftp://dns.example.com"},
 		{domain: "example.com", server: "8.8.8.8:0"},
 		{domain: "example.com", server: "2001:4860:4860::8888"},

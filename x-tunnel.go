@@ -1076,6 +1076,16 @@ func validateECHLookupConfig(domain, server string) error {
 		if u.Host == "" {
 			return fmt.Errorf("dns DoH URL 必须包含 host")
 		}
+		if u.User != nil {
+			return fmt.Errorf("dns DoH URL 不能包含 userinfo")
+		}
+		defaultPort := "443"
+		if strings.EqualFold(u.Scheme, "http") {
+			defaultPort = "80"
+		}
+		if _, err := normalizeHTTPProxyAuthority(u.Host, defaultPort); err != nil {
+			return fmt.Errorf("dns DoH URL host 无效: %w", err)
+		}
 		return nil
 	}
 	if strings.Contains(server, "://") {

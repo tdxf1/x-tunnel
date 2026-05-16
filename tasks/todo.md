@@ -1805,3 +1805,23 @@ Review:
 
 - `dialViaSocks5` now has direct coverage through an authenticated local SOCKS5 proxy.
 - The returned proxied TCP connection is verified with a real byte exchange against a one-shot TCP echo target.
+
+Post Phase 8 DoH resolver URL validation:
+
+- [x] Reject DoH resolver URLs with userinfo, invalid hostnames, unbracketed IPv6 literals, or invalid ports.
+- [x] Preserve valid HTTP/HTTPS DoH URLs with hostnames, IPv4 literals, and bracketed IPv6 literals.
+- [x] Add focused ECH lookup config coverage.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'TestValidateECHLookupConfig|TestValidateStartupConfigRejectsBadECHDNS' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 61.7% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- DoH resolver URLs now reject userinfo and reuse the same hostname/IP/port validation policy as other proxy authorities.
+- Existing UDP-style DNS resolver validation remains unchanged, including hostnames, IPv4 literals, and bracketed IPv6 literals with valid ports.
