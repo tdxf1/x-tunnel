@@ -2492,3 +2492,23 @@ Review:
 
 - Non-CONNECT HTTP proxy requests now have short real-smux coverage for remote TCPStatus errors.
 - The test proves the local proxy returns `502 Bad Gateway` before forwarding ordinary HTTP request bytes to the failed stream.
+
+Post Phase 8 proxy protocol research notes:
+
+- [x] Document SOCKS5 RFC 1928/1929 alignment and unsupported UDP fragmentation.
+- [x] Document HTTP CONNECT RFC 9110 behavior and local failure mapping.
+- [x] Document CONNECT-UDP/MASQUE RFC 9298 as future work, not current wire compatibility.
+- [x] Run docs grep/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `rg -n "RFC 1928|RFC 1929|RFC 9110|RFC 9298|CONNECT-UDP|FRAG|Connection Established" docs/proxy-protocol-research.md docs/protocol.md`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 73.7% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- Added a durable research note that maps SOCKS5, HTTP CONNECT, and CONNECT-UDP/MASQUE standards to current x-tunnel behavior and future work.
+- The note keeps CONNECT-UDP explicitly out of current wire compatibility, which helps avoid accidental protocol claims while planning future UDP work.
