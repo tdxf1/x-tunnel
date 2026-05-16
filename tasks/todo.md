@@ -2650,3 +2650,23 @@ Review:
 
 - `max-streams` rejection now gives modern TCP clients a protocol-level open failure instead of a bare stream close.
 - The rejected-stream header read is bounded to at most 200ms, preserving close-only behavior for UDP, unknown, legacy, and unreadable streams.
+
+Post Phase 8 ECH startup cancellation:
+
+- [x] Add context-aware ECH preparation so startup retry sleep can be canceled.
+- [x] Keep existing `refreshECH` behavior for runtime retries.
+- [x] Cover cancellation while waiting between failed ECH DNS attempts.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `go test -run 'Test(RefreshECHFallbackAndUDPRefresh|PrepareECHContextCancelsDuringRetry|DialWebSocketWithECH)' -count=1 ./...`: pass.
+- `git diff --check`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 75.4% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- Startup ECH preparation now observes the process context before each attempt and while waiting between retries.
+- Runtime `refreshECH` still uses the existing background behavior, preserving current retry semantics for reconnect-time ECH refreshes.

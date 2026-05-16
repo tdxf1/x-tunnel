@@ -975,7 +975,10 @@ func main() {
 			}
 		}
 		if !fallback {
-			if err := prepareECH(); err != nil {
+			if err := prepareECHContext(ctx); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return
+				}
 				log.Fatalf("[客户端] 获取 ECH 公钥失败: %v", err)
 			}
 		} else {
@@ -1883,29 +1886,53 @@ const typeHTTPS = 65
 const maxDNSMessageSize = 65535
 
 func prepareECH() error {
+	return prepareECHContext(context.Background())
+}
+
+func prepareECHContext(ctx context.Context) error {
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		log.Printf("[客户端] DNS查询 ECH: %s -> %s", dnsServer, echDomain)
 		echBase64, err := queryHTTPSRecord(echDomain, dnsServer)
 		if err != nil {
 			log.Printf("[客户端] DNS 查询失败: %v，重试...", err)
-			time.Sleep(cfg.ECHRetryDelay)
+			if err := waitECHRetry(ctx); err != nil {
+				return err
+			}
 			continue
 		}
 		if echBase64 == "" {
 			log.Printf("[客户端] 未找到 ECH 参数，重试...")
-			time.Sleep(cfg.ECHRetryDelay)
+			if err := waitECHRetry(ctx); err != nil {
+				return err
+			}
 			continue
 		}
 		raw, err := base64.StdEncoding.DecodeString(echBase64)
 		if err != nil {
 			log.Printf("[客户端] ECH Base64 解码失败: %v，重试...", err)
-			time.Sleep(cfg.ECHRetryDelay)
+			if err := waitECHRetry(ctx); err != nil {
+				return err
+			}
 			continue
 		}
 		echListMu.Lock()
 		echList = raw
 		echListMu.Unlock()
 		log.Printf("[客户端] ECHConfigList 长度: %d 字节", len(raw))
+		return nil
+	}
+}
+
+func waitECHRetry(ctx context.Context) error {
+	timer := time.NewTimer(cfg.ECHRetryDelay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
 		return nil
 	}
 }

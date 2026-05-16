@@ -879,6 +879,41 @@ func TestRefreshECHFallbackAndUDPRefresh(t *testing.T) {
 	}
 }
 
+func TestPrepareECHContextCancelsDuringRetry(t *testing.T) {
+	oldCfg := cfg
+	oldDNS, oldDomain := dnsServer, echDomain
+	echListMu.RLock()
+	oldECHList := append([]byte(nil), echList...)
+	echListMu.RUnlock()
+	t.Cleanup(func() {
+		cfg = oldCfg
+		dnsServer, echDomain = oldDNS, oldDomain
+		setTestECHList(oldECHList)
+	})
+	cfg.DNSQueryTimeout = time.Second
+	cfg.ECHRetryDelay = time.Hour
+	echDomain = "example.com"
+	setTestECHList(nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cancel()
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	dnsServer = server.URL
+
+	start := time.Now()
+	err := prepareECHContext(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("prepareECHContext err = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("prepareECHContext took %v after cancellation, want under 1s", elapsed)
+	}
+}
+
 func startDNSUDPResponder(t *testing.T, ech []byte) string {
 	t.Helper()
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
