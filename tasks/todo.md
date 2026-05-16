@@ -2237,3 +2237,23 @@ Review:
 
 - RTT probing now has a real smux ping-stream test instead of only server-side ping echo coverage.
 - The test verifies a positive RTT result and clean completion of the server ping handler.
+
+Post Phase 8 legacy TCP open compatibility:
+
+- [x] Cover `openTCPStream` when the selected channel has no `TCPStatus` capability.
+- [x] Verify the client does not wait for a status frame from legacy peers.
+- [x] Verify bidirectional bytes can flow after the TCP open header.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'TestECHPoolOpenTCPStream(StatusOK|StatusError|LegacyProxiesWithoutStatus)' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 70.9% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- TCP stream opening now has explicit compatibility coverage for legacy channels without `TCPStatus`.
+- The test proves raw request and response bytes can flow immediately after the open header without a status frame.

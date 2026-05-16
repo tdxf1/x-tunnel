@@ -5069,6 +5069,76 @@ func TestECHPoolOpenTCPStreamStatusOK(t *testing.T) {
 	}
 }
 
+func TestECHPoolOpenTCPStreamLegacyProxiesWithoutStatus(t *testing.T) {
+	serverSession, clientSession := newProtocolNegotiationSmuxPair(t)
+	oldIPStrategy := ipStrategy
+	t.Cleanup(func() { ipStrategy = oldIPStrategy })
+	ipStrategy = IPStrategyDefault
+
+	pool := &ECHPool{
+		smuxConns:   []*smux.Session{clientSession},
+		channelRTT:  []int64{int64(5 * time.Millisecond)},
+		channelCaps: []uint32{0},
+	}
+	serverDone := make(chan error, 1)
+	go func() {
+		stream, err := serverSession.AcceptStream()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer stream.Close()
+		if err := stream.SetDeadline(time.Now().Add(time.Second)); err != nil {
+			serverDone <- err
+			return
+		}
+		kind, strategy, target, err := readSmuxOpenHeader(stream)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if kind != streamKindTCP || strategy != IPStrategyDefault || target != "legacy.example:443" {
+			serverDone <- fmt.Errorf("legacy tcp open header = kind %d strategy %d target %q", kind, strategy, target)
+			return
+		}
+		payload := make([]byte, len("legacy-request"))
+		if _, err := io.ReadFull(stream, payload); err != nil {
+			serverDone <- err
+			return
+		}
+		if string(payload) != "legacy-request" {
+			serverDone <- fmt.Errorf("legacy payload = %q", payload)
+			return
+		}
+		serverDone <- writeAll(stream, []byte("legacy-response"))
+	}()
+
+	stream, chID, decision, err := pool.openTCPStream("legacy.example:443")
+	if err != nil {
+		t.Fatalf("openTCPStream legacy returned error: %v", err)
+	}
+	defer stream.Close()
+	if chID != 1 || decision != 1 {
+		t.Fatalf("openTCPStream legacy chID=%d decision=%d, want 1/1", chID, decision)
+	}
+	if err := stream.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set legacy stream deadline: %v", err)
+	}
+	if err := writeAll(stream, []byte("legacy-request")); err != nil {
+		t.Fatalf("write legacy request bytes: %v", err)
+	}
+	response := make([]byte, len("legacy-response"))
+	if _, err := io.ReadFull(stream, response); err != nil {
+		t.Fatalf("read legacy response bytes: %v", err)
+	}
+	if string(response) != "legacy-response" {
+		t.Fatalf("legacy response = %q, want legacy-response", response)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("server legacy TCP handler: %v", err)
+	}
+}
+
 func TestECHPoolOpenBestStreamNoUsableSessions(t *testing.T) {
 	pool := &ECHPool{}
 	if _, _, _, _, err := pool.openBestStream(); err == nil {
