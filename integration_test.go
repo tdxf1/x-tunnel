@@ -194,18 +194,10 @@ func TestIntegrationLocalProxyAuth(t *testing.T) {
 	waitLogContains(t, ctx, clientLog, "协议协商成功", client)
 	waitLogContains(t, ctx, serverLog, "协议协商成功", server)
 
-	if got := fetchViaHTTPProxyStatus(t, httpProxyAddr, "http://"+targetAddr+"/payload"); got != http.StatusProxyAuthRequired {
-		t.Fatalf("HTTP proxy status without auth = %d, want %d", got, http.StatusProxyAuthRequired)
-	}
-	if got := fetchViaHTTPProxyStatusWithAuth(t, httpProxyAddr, "http://"+targetAddr+"/payload", "user", "wrong"); got != http.StatusProxyAuthRequired {
-		t.Fatalf("HTTP proxy status with wrong auth = %d, want %d", got, http.StatusProxyAuthRequired)
-	}
-	if got := fetchViaHTTPConnectStatus(t, httpProxyAddr, targetAddr); got != http.StatusProxyAuthRequired {
-		t.Fatalf("HTTP CONNECT status without auth = %d, want %d", got, http.StatusProxyAuthRequired)
-	}
-	if got := fetchViaHTTPConnectStatusWithAuth(t, httpProxyAddr, targetAddr, "user", "wrong"); got != http.StatusProxyAuthRequired {
-		t.Fatalf("HTTP CONNECT status with wrong auth = %d, want %d", got, http.StatusProxyAuthRequired)
-	}
+	assertHTTPProxyAuthChallenge(t, "HTTP proxy without auth", fetchViaHTTPProxyAuthChallenge(t, httpProxyAddr, "http://"+targetAddr+"/payload", "", ""))
+	assertHTTPProxyAuthChallenge(t, "HTTP proxy wrong auth", fetchViaHTTPProxyAuthChallenge(t, httpProxyAddr, "http://"+targetAddr+"/payload", "user", "wrong"))
+	assertHTTPConnectAuthChallenge(t, httpProxyAddr, targetAddr, "", "")
+	assertHTTPConnectAuthChallenge(t, httpProxyAddr, targetAddr, "user", "wrong")
 	assertBody(t, "http proxy auth", fetchViaHTTPProxyWithAuth(t, httpProxyAddr, "http://"+targetAddr+"/payload", "user", "pass"), body)
 	assertOriginHeaderAbsent(t, originHeaders, "Proxy-Authorization")
 	rawHeaders := rawHTTPProxyGETWithAuth(t, httpProxyAddr, "http://"+targetAddr+"/headers", "user", "pass", originHeaders, map[string]string{
@@ -805,6 +797,40 @@ func fetchViaHTTPProxyStatusWithAuth(t *testing.T, proxyAddr, rawURL, username, 
 	return resp.StatusCode
 }
 
+func fetchViaHTTPProxyAuthChallenge(t *testing.T, proxyAddr, rawURL, username, password string) *http.Response {
+	t.Helper()
+	client := httpProxyClient(t, proxyAddr, username, password)
+	resp, err := client.Get(rawURL)
+	if err != nil {
+		t.Fatalf("proxy auth challenge GET %s: %v", rawURL, err)
+	}
+	return resp
+}
+
+func assertHTTPProxyAuthChallenge(t *testing.T, label string, resp *http.Response) {
+	t.Helper()
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusProxyAuthRequired {
+		t.Fatalf("%s status = %d, want %d", label, resp.StatusCode, http.StatusProxyAuthRequired)
+	}
+	if resp.Status != "407 Proxy Authentication Required" {
+		t.Fatalf("%s status line = %q, want 407 Proxy Authentication Required", label, resp.Status)
+	}
+	if got := resp.Header.Get("Proxy-Authenticate"); got == "" {
+		t.Fatalf("%s missing Proxy-Authenticate header", label)
+	}
+	if resp.ContentLength != 0 {
+		t.Fatalf("%s ContentLength = %d, want 0", label, resp.ContentLength)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("%s read body: %v", label, err)
+	}
+	if len(body) != 0 {
+		t.Fatalf("%s body = %q, want empty", label, body)
+	}
+}
+
 func httpProxyClient(t *testing.T, proxyAddr, username, password string) *http.Client {
 	t.Helper()
 	proxyURL, err := url.Parse("http://" + proxyAddr)
@@ -847,6 +873,28 @@ func fetchViaHTTPConnectStatusWithAuth(t *testing.T, proxyAddr, targetAddr, user
 		t.Fatalf("read CONNECT status: %v", err)
 	}
 	return parseHTTPStatusCode(t, status)
+}
+
+func assertHTTPConnectAuthChallenge(t *testing.T, proxyAddr, targetAddr, username, password string) {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", proxyAddr, 3*time.Second)
+	if err != nil {
+		t.Fatalf("dial HTTP proxy: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(integrationIOTimeout)); err != nil {
+		t.Fatalf("set HTTP proxy deadline: %v", err)
+	}
+	writeHTTPConnectRequest(t, conn, targetAddr, username, password)
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read CONNECT auth challenge: %v", err)
+	}
+	label := "HTTP CONNECT auth challenge"
+	if username != "" || password != "" {
+		label = "HTTP CONNECT wrong auth"
+	}
+	assertHTTPProxyAuthChallenge(t, label, resp)
 }
 
 func fetchViaHTTPConnectWithAuth(t *testing.T, proxyAddr, targetAddr, path, username, password string) string {

@@ -1877,12 +1877,32 @@ Post Phase 8 TCP dial strategy coverage:
 Verification:
 
 - `git diff --check`: pass.
-- `go test -run 'TestDialTCPWithStrategy(LiteralIPIgnoresStrategy|LocalhostFamilies)|TestResolveUDPWithStrategy(LiteralIPs|LocalhostFamilies)' -count=1 ./...`: pass.
+- `go test -run 'TestDialTCPWithStrategy(LiteralIP|LocalhostFamilies)|TestResolveUDPWithStrategy(LiteralIPs|LocalhostFamilies)' -count=1 ./...`: pass.
 - `go test -count=1 ./...`: pass.
-- `go test -cover -count=1 ./...`: pass, `coverage: 63.8% of statements`.
+- `go test -cover -count=1 ./...`: pass, `coverage: 64.1% of statements`.
 - `go test -race -count=1 ./...`: pass.
 
 Review:
 
 - TCP dial strategy now has loopback coverage matching the UDP strategy coverage already added.
 - Literal IP TCP targets bypass DNS strategy selection, while localhost strategy paths are proven against real IPv4 and available IPv6 listeners.
+
+Post Phase 8 HTTP proxy auth integration detail:
+
+- [x] Assert real HTTP proxy 407 responses use the conventional status line.
+- [x] Assert real HTTP proxy 407 responses include `Proxy-Authenticate` and `Content-Length: 0`.
+- [x] Cover both absolute-form HTTP and CONNECT proxy auth failures in the integration test.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'TestIntegrationLocalProxyAuth|TestHandleHTTPRejectsProxyAuth' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 64.1% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- The local proxy auth integration now validates real process 407 framing instead of only checking status codes.
+- Absolute-form HTTP proxy requests and CONNECT requests both prove standard status text, proxy-auth challenge, explicit empty body length, and empty response bodies.
