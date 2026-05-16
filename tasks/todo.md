@@ -3079,3 +3079,22 @@ Verification:
 Review:
 
 - README now lists the current server, UDP, client, and per-channel metrics instead of describing metrics only in broad categories.
+
+Post Phase 9 client metrics integration assertions:
+
+- [x] Add client channel and RTT probe failure metrics to the integration metrics presence check.
+- [x] Assert the live client metrics endpoint reports channel 1 as up after tunnel traffic succeeds.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `go test -run 'TestLocalTunnelIntegration' -count=1 ./...`: pass.
+- `git diff --check`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 77.4% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- The local tunnel integration test now verifies the live client metrics endpoint includes RTT probe failure and channel RTT metrics.
+- It also asserts `x_tunnel_client_channel_up{channel="1"} 1` after real tunnel traffic succeeds.

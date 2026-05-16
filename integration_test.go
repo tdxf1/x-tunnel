@@ -135,6 +135,9 @@ func TestLocalTunnelIntegration(t *testing.T) {
 	clientMetrics := fetchHTTP(t, "http://"+clientMetricsAddr+"/metrics")
 	assertMetrics(t, clientMetrics)
 	assertMetricValue(t, clientMetrics, "x_tunnel_client_protocol_negotiations_total", "1")
+	assertMetricPresent(t, clientMetrics, "x_tunnel_client_rtt_probe_failures_total")
+	assertMetricPresent(t, clientMetrics, "x_tunnel_client_channel_rtt_seconds")
+	assertMetricValue(t, clientMetrics, `x_tunnel_client_channel_up{channel="1"}`, "1")
 
 	badClient := startXTunnel(t, ctx, binPath, badClientLog,
 		"-l", "socks5://"+freeTCPAddr(t),
@@ -1601,6 +1604,13 @@ func assertMetrics(t *testing.T, got string) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("metrics missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func assertMetricPresent(t *testing.T, got, name string) {
+	t.Helper()
+	if !strings.Contains(got, name) {
+		t.Fatalf("metrics missing %q:\n%s", name, got)
 	}
 }
 
