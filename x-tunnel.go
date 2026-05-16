@@ -1192,7 +1192,7 @@ func validateHostPattern(pattern string) error {
 }
 
 func validHostname(host string) bool {
-	host = strings.ToLower(host)
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
 	if host == "" || len(host) > 253 {
 		return false
 	}

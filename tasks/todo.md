@@ -1653,3 +1653,26 @@ Review:
 
 - Ordinary HTTP proxy requests now open the smux stream before waiting for the full request body, then stream `Request.Write` directly to the tunnel.
 - The focused POST test proves forwarded headers reach the smux stream before the delayed body is sent, while existing CONNECT buffered-byte coverage remains intact.
+
+Post Phase 8 client protocol negotiation coverage:
+
+- [ ] Add smux-level coverage for successful client hello negotiation.
+- [ ] Add coverage for legacy hello close/error classification.
+- [ ] Run focused/full/coverage/race verification and commit.
+
+Post Phase 8 hostname trailing-dot compatibility:
+
+- [x] Preserve valid trailing-dot DNS hostnames while rejecting malformed hostnames.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'TestValidateHostPortRejectsWhitespace' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 59.2% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- Hostname validation now trims one trailing root dot before validating labels, matching the existing target-policy normalization behavior.
