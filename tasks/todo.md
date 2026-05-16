@@ -2418,10 +2418,23 @@ Review:
 
 Post Phase 8 ECH refresh coverage:
 
-- [ ] Cover `refreshECH` fallback skip behavior without DNS lookup.
-- [ ] Cover `refreshECH` loading ECH config through `prepareECH` and a loopback UDP DNS responder.
-- [ ] Verify the global ECH list is preserved or updated as expected.
-- [ ] Run focused/full/coverage/race verification and commit.
+- [x] Cover `refreshECH` fallback skip behavior without DNS lookup.
+- [x] Cover `refreshECH` loading ECH config through `prepareECH` and a loopback UDP DNS responder.
+- [x] Verify the global ECH list is preserved or updated as expected.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'Test(RefreshECHFallbackAndUDPRefresh|QueryHTTPSRecordDispatchesTransports)' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 73.6% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- ECH refresh now has coverage for fallback mode preserving the existing config without DNS lookup.
+- Non-fallback refresh is covered through `prepareECH` using a loopback UDP DNS HTTPS-record responder.
 
 Post Phase 8 SOCKS5 CONNECT TCPStatus error mapping:
 
@@ -2441,3 +2454,9 @@ Review:
 
 - SOCKS5 CONNECT now has short real-smux coverage for both remote TCPStatus success and remote TCPStatus error paths.
 - A remote TCP open failure maps to SOCKS5 general failure and closes the client connection before any payload proxying can start.
+
+Post Phase 8 HTTP CONNECT TCPStatus error mapping:
+
+- [ ] Cover `handleHTTP` CONNECT when `openTCPStream` returns a negotiated TCPStatus error.
+- [ ] Verify the local response is `502 Bad Gateway` with an empty body.
+- [ ] Run focused/full/coverage/race verification and commit.
