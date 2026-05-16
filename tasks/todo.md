@@ -2034,6 +2034,26 @@ Review:
 - ECHPool stream selection now has regression coverage for empty pools, unusable sessions, and nil-session skipping.
 - Near-RTT round-robin behavior is covered across two healthy smux sessions, including returned channel decision metadata and capability propagation.
 
+Post Phase 8 server TCP smux success path:
+
+- [x] Cover `handleSmuxStream` opening a TCP target and returning TCPStatus OK.
+- [x] Verify proxied bytes flow through the smux stream to a real loopback TCP echo target.
+- [x] Preserve target-policy and upstream SOCKS globals after the test.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'TestHandleSmuxStream(TCPStatusSuccessProxiesBytes|RejectsMalformedTCPTargetWithStatus|RejectsInvalidIPStrategyWithStatus)' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 66.9% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- Server TCP smux handling now has a success-path regression proving TCPStatus OK is emitted before proxied bytes.
+- The test uses a real loopback TCP echo target and verifies payload exchange through the smux stream.
+
 Commit frequency and quality assessment:
 
 - [x] Collect commit cadence, author, and churn metrics from Git history.

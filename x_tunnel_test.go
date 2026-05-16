@@ -4145,6 +4145,58 @@ func TestHandleSmuxStreamRejectsInvalidIPStrategyWithStatus(t *testing.T) {
 	}
 }
 
+func TestHandleSmuxStreamTCPStatusSuccessProxiesBytes(t *testing.T) {
+	oldCfg := cfg
+	oldTargetPolicy := targetPolicy
+	oldSocks5Config := socks5Config
+	t.Cleanup(func() {
+		cfg = oldCfg
+		targetPolicy = oldTargetPolicy
+		socks5Config = oldSocks5Config
+	})
+	cfg.DialTimeout = time.Second
+	targetPolicy = nil
+	socks5Config = nil
+
+	targetAddr := startOneShotTCPEcho(t)
+	clientStream, serverStream := openAcceptedSmuxTestStreamWithHeader(t, streamKindTCP, IPStrategyDefault, targetAddr)
+	done := make(chan struct{})
+	session := &ClientSession{clientID: "tcp-status-success-test", channels: make(map[uint64]*WSChannel)}
+	ch := &WSChannel{id: 1, session: session, capabilities: protocolCapabilityTCPStatus}
+	go func() {
+		defer close(done)
+		handleSmuxStream(session, ch, serverStream)
+	}()
+
+	status, message, err := readTCPOpenStatus(clientStream)
+	if err != nil {
+		t.Fatalf("read TCP open status: %v", err)
+	}
+	if status != tcpOpenStatusOK || message != "" {
+		t.Fatalf("TCP open status = %d %q, want OK empty message", status, message)
+	}
+	if err := clientStream.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set client stream deadline: %v", err)
+	}
+	if _, err := clientStream.Write([]byte("ping")); err != nil {
+		t.Fatalf("write proxied TCP payload: %v", err)
+	}
+	reply := make([]byte, len("echo:ping"))
+	if _, err := io.ReadFull(clientStream, reply); err != nil {
+		t.Fatalf("read proxied TCP reply: %v", err)
+	}
+	if string(reply) != "echo:ping" {
+		t.Fatalf("proxied TCP reply = %q, want echo:ping", reply)
+	}
+	_ = clientStream.Close()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for TCP smux success handler")
+	}
+}
+
 func TestHandleSmuxStreamRejectsInvalidUDPIPStrategy(t *testing.T) {
 	oldTargetRejects := atomic.LoadUint64(&serverTargetRejectSeq)
 	defer atomic.StoreUint64(&serverTargetRejectSeq, oldTargetRejects)
