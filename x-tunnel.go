@@ -2508,7 +2508,7 @@ func runWebSocketServer(ctx context.Context, addr string, allowedNets []*net.IPN
 	})
 
 	server := &http.Server{Addr: u.Host, Handler: mux}
-	go shutdownHTTPServer(ctx, server)
+	go shutdownHTTPServer(ctx, server, cfg.ShutdownTimeout)
 
 	if u.Scheme == "wss" {
 		if certFile != "" && keyFile != "" {
@@ -2548,9 +2548,9 @@ func runWebSocketServer(ctx context.Context, addr string, allowedNets []*net.IPN
 	}
 }
 
-func shutdownHTTPServer(ctx context.Context, server *http.Server) {
+func shutdownHTTPServer(ctx context.Context, server *http.Server, timeout time.Duration) {
 	<-ctx.Done()
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Printf("[服务端] HTTP 服务关闭失败: %v", err)
@@ -2564,7 +2564,7 @@ func runMetricsServer(ctx context.Context, addr string) {
 		writeMetrics(w)
 	})
 	server := &http.Server{Addr: addr, Handler: mux}
-	go shutdownHTTPServer(ctx, server)
+	go shutdownHTTPServer(ctx, server, cfg.ShutdownTimeout)
 	log.Printf("[metrics] HTTP 启动 %s/metrics", addr)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Printf("[metrics] HTTP 启动失败: %v", err)

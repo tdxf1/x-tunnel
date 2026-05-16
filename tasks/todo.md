@@ -2177,3 +2177,23 @@ Review:
 - Commit hygiene is strong for small, typed commits: no WIP/fixup subjects found; prefixes are `fix`, `test`, `docs`, `feat`, `chore`, `refactor`, and `ci`.
 - Engineering quality signals are strongest around tests, CI, edge-case hardening, race checks, fuzz smoke checks, and verification logging.
 - Main maintainability risk is code organization: `x-tunnel.go` is 4307 lines with 161 functions, including several 100+ line functions.
+
+Post Phase 8 metrics shutdown helper coverage:
+
+- [x] Cover `shutdownHTTPServer` with a real loopback HTTP server and context cancellation.
+- [x] Cover `runMetricsServer` returning cleanly on a listen error without changing runtime behavior.
+- [x] Pass shutdown timeout into the goroutine to avoid background reads from global config.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'Test(ShutdownHTTPServerStopsRealServer|RunMetricsServerReturnsOnListenError|WriteMetrics)$' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 69.5% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- The shutdown helper is now covered by a real HTTP server that serves a request and then closes through context cancellation.
+- The race run exposed a background read of global config; passing the shutdown timeout into the goroutine removes that latent data race.

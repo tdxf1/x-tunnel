@@ -245,6 +245,77 @@ func TestWriteMetrics(t *testing.T) {
 	}
 }
 
+func TestShutdownHTTPServerStopsRealServer(t *testing.T) {
+	oldCfg := cfg
+	t.Cleanup(func() { cfg = oldCfg })
+	cfg.ShutdownTimeout = time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen test http server: %v", err)
+	}
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	})}
+	shutdownDone := make(chan struct{})
+	go func() {
+		shutdownHTTPServer(ctx, server, cfg.ShutdownTimeout)
+		close(shutdownDone)
+	}()
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- server.Serve(ln)
+	}()
+
+	client := http.Client{Timeout: time.Second}
+	resp, err := client.Get("http://" + ln.Addr().String())
+	if err != nil {
+		t.Fatalf("GET before shutdown: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		t.Fatalf("read response before shutdown: %v", err)
+	}
+	if string(body) != "ok" {
+		t.Fatalf("response body before shutdown = %q, want ok", body)
+	}
+
+	cancel()
+	select {
+	case err := <-serveErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Fatalf("server.Serve returned %v, want ErrServerClosed", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server did not stop after context cancellation")
+	}
+	select {
+	case <-shutdownDone:
+	case <-time.After(time.Second):
+		t.Fatal("shutdownHTTPServer did not return after context cancellation")
+	}
+}
+
+func TestRunMetricsServerReturnsOnListenError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		runMetricsServer(ctx, "127.0.0.1:notaport")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runMetricsServer did not return after listen error")
+	}
+	cancel()
+}
+
 func TestLoadConfigFileAppliesUnsetFlags(t *testing.T) {
 	oldCfg := cfg
 	oldListen, oldForward, oldToken := listenAddr, forwardAddr, token
