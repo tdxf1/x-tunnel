@@ -1468,7 +1468,7 @@ func socks5Handshake(conn net.Conn, config *SOCKS5Config) error {
 	greeting[0], greeting[1] = 0x05, byte(len(methods))
 	copy(greeting[2:], methods)
 
-	if _, err := conn.Write(greeting); err != nil {
+	if err := writeAll(conn, greeting); err != nil {
 		return err
 	}
 	response := make([]byte, 2)
@@ -1506,7 +1506,7 @@ func socks5UserPassAuthSrv(conn net.Conn, username, password string) error {
 	authReq[2+len(username)] = byte(len(password))
 	copy(authReq[3+len(username):], password)
 
-	if _, err := conn.Write(authReq); err != nil {
+	if err := writeAll(conn, authReq); err != nil {
 		return err
 	}
 	response := make([]byte, 2)
@@ -1560,7 +1560,7 @@ func socks5Connect(conn net.Conn, addr string) error {
 		request[5+len(host)], request[6+len(host)] = byte(port>>8), byte(port)
 	}
 
-	if _, err := conn.Write(request); err != nil {
+	if err := writeAll(conn, request); err != nil {
 		return err
 	}
 	response := make([]byte, 4)
@@ -1645,8 +1645,7 @@ func newSOCKS5UDPRelay(targetAddr string) (*SOCKS5UDPRelay, error) {
 		tcpConn.Close()
 		return nil, err
 	}
-	req := []byte{0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0}
-	if _, err := tcpConn.Write(req); err != nil {
+	if err := writeSOCKS5UDPAssociate(tcpConn); err != nil {
 		tcpConn.Close()
 		return nil, err
 	}
@@ -1739,6 +1738,10 @@ func newSOCKS5UDPRelay(targetAddr string) (*SOCKS5UDPRelay, error) {
 		relayAddr:  rAddr,
 		targetAddr: tAddr,
 	}, nil
+}
+
+func writeSOCKS5UDPAssociate(w io.Writer) error {
+	return writeAll(w, []byte{0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 }
 
 func (r *SOCKS5UDPRelay) Write(data []byte) (int, error) {
@@ -3119,7 +3122,7 @@ func (p *ECHPool) probeChannelRTTOnce(sess *smux.Session, timeout time.Duration)
 	}
 	payload := make([]byte, 8)
 	binary.BigEndian.PutUint64(payload, uint64(start.UnixNano()))
-	if _, err := s.Write(payload); err != nil {
+	if err := writeAll(s, payload); err != nil {
 		return 0, err
 	}
 	ack := make([]byte, 8)

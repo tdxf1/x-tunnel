@@ -1259,3 +1259,18 @@ Verification:
 - `go test -count=1 ./...`: pass.
 - `go test -cover -count=1 ./...`: pass, `coverage: 51.0% of statements`.
 - `go test -race -count=1 ./...`: pass.
+
+Post Phase 8 SOCKS5 upstream short-write handling:
+
+- [x] Use `writeAll` for upstream SOCKS5 method greeting writes.
+- [x] Use `writeAll` for upstream username/password auth and CONNECT request writes.
+- [x] Use `writeAll` for upstream SOCKS5 UDP ASSOCIATE request writes.
+- [x] Add focused net.Conn short-write regression tests and commit after full verification.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'Test(Socks5HandshakeHandlesProgressiveShortWrites|UpstreamSOCKS5WritersRejectShortWrites|Socks5UserPassAuthSrvHandlesProgressiveShortWrites|Socks5ConnectHandlesProgressiveShortWrites|ProtocolWritersRejectShortWritesWithoutError|WriteAllHandlesProgressiveShortWrites)' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 51.2% of statements`.
+- `go test -race -count=1 ./...`: pass.

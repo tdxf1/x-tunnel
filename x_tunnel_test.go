@@ -1327,6 +1327,80 @@ func TestSocks5HandshakeRejectsUnofferedMethod(t *testing.T) {
 	}
 }
 
+func TestSocks5HandshakeHandlesProgressiveShortWrites(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+	_ = server.SetDeadline(time.Now().Add(time.Second))
+	_ = client.SetDeadline(time.Now().Add(time.Second))
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- socks5Handshake(oneByteConn{Conn: client}, &SOCKS5Config{})
+	}()
+
+	head := make([]byte, 2)
+	if _, err := io.ReadFull(server, head); err != nil {
+		t.Fatalf("read SOCKS5 greeting head: %v", err)
+	}
+	if !bytes.Equal(head, []byte{0x05, 0x01}) {
+		t.Fatalf("SOCKS5 greeting head = %v, want [5 1]", head)
+	}
+	methods := make([]byte, int(head[1]))
+	if _, err := io.ReadFull(server, methods); err != nil {
+		t.Fatalf("read SOCKS5 methods: %v", err)
+	}
+	if !bytes.Equal(methods, []byte{0x00}) {
+		t.Fatalf("SOCKS5 methods = %v, want [0]", methods)
+	}
+	if _, err := server.Write([]byte{0x05, 0x00}); err != nil {
+		t.Fatalf("write SOCKS5 method selection: %v", err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("socks5Handshake returned error: %v", err)
+	}
+}
+
+func TestUpstreamSOCKS5WritersRejectShortWrites(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{
+			name: "method greeting",
+			run: func() error {
+				return socks5Handshake(shortWriteNoErrorConn{}, &SOCKS5Config{})
+			},
+		},
+		{
+			name: "userpass auth",
+			run: func() error {
+				return socks5UserPassAuthSrv(shortWriteNoErrorConn{}, "user", "pass")
+			},
+		},
+		{
+			name: "connect request",
+			run: func() error {
+				return socks5Connect(shortWriteNoErrorConn{}, "127.0.0.1:80")
+			},
+		},
+		{
+			name: "udp associate request",
+			run: func() error {
+				return writeSOCKS5UDPAssociate(shortWriteNoErrorWriter{})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.run(); err != io.ErrShortWrite {
+				t.Fatalf("writer error = %v, want %v", err, io.ErrShortWrite)
+			}
+		})
+	}
+}
+
 func readSOCKS5AuthRequest(t *testing.T, r io.Reader) string {
 	t.Helper()
 	head := make([]byte, 2)
@@ -1385,6 +1459,29 @@ func TestSocks5UserPassAuthSrvRejectsInvalidResponseVersion(t *testing.T) {
 	}
 }
 
+func TestSocks5UserPassAuthSrvHandlesProgressiveShortWrites(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+	_ = server.SetDeadline(time.Now().Add(time.Second))
+	_ = client.SetDeadline(time.Now().Add(time.Second))
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- socks5UserPassAuthSrv(oneByteConn{Conn: client}, "user", "pass")
+	}()
+
+	if got := readSOCKS5AuthRequest(t, server); got != "user:pass" {
+		t.Fatalf("SOCKS5 auth request = %q, want user:pass", got)
+	}
+	if _, err := server.Write([]byte{0x01, 0x00}); err != nil {
+		t.Fatalf("write auth response: %v", err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("socks5UserPassAuthSrv returned error: %v", err)
+	}
+}
+
 func TestSocks5ConnectRejectsTruncatedBoundAddress(t *testing.T) {
 	server, client := net.Pipe()
 	defer server.Close()
@@ -1431,6 +1528,34 @@ func TestSocks5ConnectRejectsInvalidResponseHeader(t *testing.T) {
 				t.Fatal("socks5Connect accepted invalid response header")
 			}
 		})
+	}
+}
+
+func TestSocks5ConnectHandlesProgressiveShortWrites(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+	_ = server.SetDeadline(time.Now().Add(time.Second))
+	_ = client.SetDeadline(time.Now().Add(time.Second))
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- socks5Connect(oneByteConn{Conn: client}, "127.0.0.1:80")
+	}()
+
+	req := make([]byte, 10)
+	if _, err := io.ReadFull(server, req); err != nil {
+		t.Fatalf("read SOCKS5 connect request: %v", err)
+	}
+	want := []byte{0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1, 0, 80}
+	if !bytes.Equal(req, want) {
+		t.Fatalf("SOCKS5 connect request = %v, want %v", req, want)
+	}
+	if _, err := server.Write([]byte{0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0, 80}); err != nil {
+		t.Fatalf("write SOCKS5 connect response: %v", err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("socks5Connect returned error: %v", err)
 	}
 }
 
@@ -2900,6 +3025,40 @@ func (shortWriteNoErrorWriter) Write(p []byte) (int, error) {
 	return len(p) - 1, nil
 }
 
+type shortWriteNoErrorConn struct{}
+
+func (shortWriteNoErrorConn) Read([]byte) (int, error) {
+	return 0, io.ErrUnexpectedEOF
+}
+
+func (shortWriteNoErrorConn) Write(p []byte) (int, error) {
+	return shortWriteNoErrorWriter{}.Write(p)
+}
+
+func (shortWriteNoErrorConn) Close() error {
+	return nil
+}
+
+func (shortWriteNoErrorConn) LocalAddr() net.Addr {
+	return nil
+}
+
+func (shortWriteNoErrorConn) RemoteAddr() net.Addr {
+	return nil
+}
+
+func (shortWriteNoErrorConn) SetDeadline(time.Time) error {
+	return nil
+}
+
+func (shortWriteNoErrorConn) SetReadDeadline(time.Time) error {
+	return nil
+}
+
+func (shortWriteNoErrorConn) SetWriteDeadline(time.Time) error {
+	return nil
+}
+
 type oneByteWriter struct {
 	bytes.Buffer
 }
@@ -2909,6 +3068,17 @@ func (w *oneByteWriter) Write(p []byte) (int, error) {
 		p = p[:1]
 	}
 	return w.Buffer.Write(p)
+}
+
+type oneByteConn struct {
+	net.Conn
+}
+
+func (c oneByteConn) Write(p []byte) (int, error) {
+	if len(p) > 1 {
+		p = p[:1]
+	}
+	return c.Conn.Write(p)
 }
 
 func TestProtocolWritersRejectShortWritesWithoutError(t *testing.T) {
