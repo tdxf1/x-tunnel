@@ -1,0 +1,548 @@
+package app
+
+import (
+	"bytes"
+	"context"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/gorilla/websocket"
+	"github.com/xtaci/smux"
+)
+
+type ECHPool struct {
+	wsServerAddr  string
+	connectionNum int
+	targetIPs     []string
+	clientID      string
+
+	wsConnsMu     sync.RWMutex
+	smuxConns     []*smux.Session
+	channelRTT    []int64
+	channelCaps   []uint32
+	selectCounter uint64
+}
+
+func NewECHPool(addr string, n int, ips []string, clientID string) *ECHPool {
+	total := n
+	if len(ips) > 0 {
+		total = len(ips) * n
+	}
+	p := &ECHPool{
+		wsServerAddr:  addr,
+		connectionNum: n,
+		targetIPs:     ips,
+		clientID:      clientID,
+		smuxConns:     make([]*smux.Session, total),
+		channelRTT:    make([]int64, total),
+		channelCaps:   make([]uint32, total),
+	}
+	return p
+}
+
+func (p *ECHPool) Start(ctx context.Context) {
+	for i := 0; i < len(p.smuxConns); i++ {
+		ip := ""
+		if len(p.targetIPs) > 0 {
+			if idx := i / p.connectionNum; idx < len(p.targetIPs) {
+				ip = p.targetIPs[idx]
+			}
+		}
+		go p.dialAndServe(ctx, i, ip)
+	}
+}
+
+func (p *ECHPool) dialAndServe(ctx context.Context, idx int, ip string) {
+	chID := idx + 1
+	ipLabel := ip
+	if strings.TrimSpace(ipLabel) == "" {
+		ipLabel = "自动解析"
+	}
+	reconnectAttempt := 0
+	sleepBeforeReconnect := func(reason string) bool {
+		delay := reconnectDelay(reconnectAttempt)
+		atomic.AddUint64(&clientReconnectSeq, 1)
+		log.Printf("[客户端] 通道 %d (IP:%s) %s，%s 后重试 (attempt=%d)", chID, ipLabel, reason, delay, reconnectAttempt+1)
+		reconnectAttempt++
+		return sleepWithContext(ctx, delay)
+	}
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		wsConn, err := dialWebSocketWithECH(p.wsServerAddr, 3, ip, p.clientID, chID)
+		if err != nil {
+			if !sleepBeforeReconnect(fmt.Sprintf("连接失败: %v", err)) {
+				return
+			}
+			continue
+		}
+		wsNet := newWSNetConn(wsConn)
+		sess, err := smux.Client(wsNet, nil)
+		if err != nil {
+			_ = wsConn.Close()
+			if !sleepBeforeReconnect(fmt.Sprintf("smux 初始化失败: %v", err)) {
+				return
+			}
+			continue
+		}
+		caps, legacyProtocol, err := negotiateClientProtocol(sess, cfg.RTTProbeTimeout)
+		if err != nil {
+			atomic.AddUint64(&clientProtocolFailureSeq, 1)
+			_ = sess.Close()
+			_ = wsConn.Close()
+			if !sleepBeforeReconnect(fmt.Sprintf("协议协商失败: %v", err)) {
+				return
+			}
+			continue
+		}
+		if legacyProtocol {
+			atomic.AddUint64(&clientProtocolLegacySeq, 1)
+			log.Printf("[客户端] 通道 %d (IP:%s) 使用旧协议模式（服务端未响应 hello）", chID, ipLabel)
+		} else {
+			atomic.AddUint64(&clientProtocolOKSeq, 1)
+			log.Printf("[客户端] 通道 %d (IP:%s) 协议协商成功: version=%d caps=0x%x", chID, ipLabel, protocolVersion, caps)
+		}
+		p.wsConnsMu.Lock()
+		p.smuxConns[idx] = sess
+		p.channelRTT[idx] = 0
+		p.channelCaps[idx] = caps
+		p.wsConnsMu.Unlock()
+		log.Printf("[客户端] 通道 %d (IP:%s) 就绪 (smux)", chID, ipLabel)
+		reconnectAttempt = 0
+		if rtt, err := p.probeChannelRTTOnce(sess, cfg.RTTProbeTimeout); err == nil {
+			atomic.StoreInt64(&p.channelRTT[idx], rtt)
+		} else {
+			atomic.AddUint64(&clientRTTProbeFailureSeq, 1)
+		}
+
+		done := make(chan error, 1)
+		go p.probeChannelRTT(sess, idx, done)
+		var probeErr error
+		select {
+		case probeErr = <-done:
+		case <-wsNet.Dead():
+			_ = sess.Close()
+			<-done
+			probeErr = wsNet.DeadErr()
+			if probeErr == nil {
+				probeErr = io.EOF
+			}
+		case <-ctx.Done():
+			_ = sess.Close()
+			<-done
+			probeErr = ctx.Err()
+		}
+
+		_ = sess.Close()
+		_ = wsConn.Close()
+
+		p.wsConnsMu.Lock()
+		p.smuxConns[idx] = nil
+		p.channelRTT[idx] = 0
+		p.channelCaps[idx] = 0
+		p.wsConnsMu.Unlock()
+		if probeErr != nil {
+			log.Printf("[客户端] 通道 %d 断开原因: %v", chID, probeErr)
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if !sleepBeforeReconnect("断开") {
+			return
+		}
+	}
+}
+
+func (p *ECHPool) probeChannelRTT(sess *smux.Session, idx int, done chan error) {
+	var exitErr error
+	defer func() {
+		done <- exitErr
+		close(done)
+	}()
+	ticker := time.NewTicker(cfg.RTTProbeTimeout)
+	defer ticker.Stop()
+	for {
+		rtt, err := p.probeChannelRTTOnce(sess, cfg.RTTProbeTimeout)
+		if err != nil {
+			atomic.AddUint64(&clientRTTProbeFailureSeq, 1)
+			atomic.StoreInt64(&p.channelRTT[idx], int64(cfg.RTTProbeTimeout.Nanoseconds()))
+			if sess.IsClosed() {
+				exitErr = err
+				return
+			}
+			<-ticker.C
+			continue
+		}
+		atomic.StoreInt64(&p.channelRTT[idx], rtt)
+		<-ticker.C
+	}
+}
+
+func (p *ECHPool) probeChannelRTTOnce(sess *smux.Session, timeout time.Duration) (int64, error) {
+	start := time.Now()
+	s, err := sess.OpenStream()
+	if err != nil {
+		return 0, err
+	}
+	defer s.Close()
+	_ = s.SetDeadline(time.Now().Add(timeout))
+	if err := writeSmuxOpenHeader(s, streamKindPing, 0, ""); err != nil {
+		return 0, err
+	}
+	payload := make([]byte, 8)
+	binary.BigEndian.PutUint64(payload, uint64(start.UnixNano()))
+	if err := writeAll(s, payload); err != nil {
+		return 0, err
+	}
+	ack := make([]byte, 8)
+	if _, err := io.ReadFull(s, ack); err != nil {
+		return 0, err
+	}
+	if !bytes.Equal(ack, payload) {
+		return 0, fmt.Errorf("ping ack mismatch")
+	}
+	return time.Since(start).Nanoseconds(), nil
+}
+
+func negotiateClientProtocol(sess *smux.Session, timeout time.Duration) (uint32, bool, error) {
+	s, err := sess.OpenStream()
+	if err != nil {
+		return 0, false, err
+	}
+	defer s.Close()
+	_ = s.SetDeadline(time.Now().Add(timeout))
+	if err := writeSmuxOpenHeader(s, streamKindHello, IPStrategyDefault, ""); err != nil {
+		return 0, false, err
+	}
+	if err := writeProtocolHello(s, currentProtocolHello()); err != nil {
+		return 0, false, err
+	}
+	response, err := readProtocolHello(s)
+	if err != nil {
+		if isLegacyProtocolHelloError(err) {
+			return 0, true, nil
+		}
+		return 0, false, err
+	}
+	if response.Status != protocolStatusOK {
+		if response.Message != "" {
+			return 0, false, fmt.Errorf("协议协商失败: %s", response.Message)
+		}
+		return 0, false, fmt.Errorf("协议协商失败: status=%d", response.Status)
+	}
+	if response.Version != protocolVersion {
+		return 0, false, fmt.Errorf("协议版本不匹配: %d", response.Version)
+	}
+	required := requiredProtocolCapabilities()
+	if response.Capabilities&required != required {
+		return 0, false, fmt.Errorf("协议能力不足: caps=0x%x", response.Capabilities)
+	}
+	return response.Capabilities, false, nil
+}
+
+func isLegacyProtocolHelloError(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		return true
+	}
+	return false
+}
+
+func shortID(id string) string {
+	if len(id) >= 8 {
+		return id[:8]
+	}
+	return id
+}
+
+func proxyConnStream(c net.Conn, stream *smux.Stream) {
+	done := make(chan struct{}, 2)
+	go func() {
+		_, _ = io.Copy(stream, c)
+		done <- struct{}{}
+	}()
+	go func() {
+		_, _ = io.Copy(c, stream)
+		done <- struct{}{}
+	}()
+	<-done
+
+	// 立即关闭双方，强制中断另一方向的 io.Copy
+	_ = stream.Close()
+	_ = c.Close()
+
+	<-done // 等待另一方向退出
+}
+
+func clientSourceAddr(c net.Conn) string {
+	if ra := c.RemoteAddr(); ra != nil {
+		return ra.String()
+	}
+	return "-"
+}
+
+func logClientConnEvent(c net.Conn, reqType, target string, chID int, opened bool) {
+	arrow := "关闭"
+	if opened {
+		arrow = "打开"
+	}
+	log.Printf("[客户端] %s %s %s %s 通道 %d", clientSourceAddr(c), reqType, arrow, target, chID)
+}
+
+func (p *ECHPool) openBestStream() (*smux.Stream, int, int, uint32, error) {
+	p.wsConnsMu.RLock()
+	type candidate struct {
+		idx int
+		rtt int64
+	}
+	cands := make([]candidate, 0, len(p.smuxConns))
+	for i, sess := range p.smuxConns {
+		if sess == nil || sess.IsClosed() {
+			continue
+		}
+		rtt := atomic.LoadInt64(&p.channelRTT[i])
+		if rtt <= 0 {
+			rtt = int64(cfg.RTTProbeTimeout.Nanoseconds())
+		}
+		cands = append(cands, candidate{idx: i, rtt: rtt})
+	}
+	p.wsConnsMu.RUnlock()
+	if len(cands) == 0 {
+		return nil, 0, 0, 0, fmt.Errorf("无可用 smux 通道")
+	}
+	minRTT := cands[0].rtt
+	for _, c := range cands[1:] {
+		if c.rtt < minRTT {
+			minRTT = c.rtt
+		}
+	}
+	tieWindow := int64((10 * time.Millisecond).Nanoseconds())
+	near := make([]candidate, 0, len(cands))
+	for _, c := range cands {
+		if c.rtt <= minRTT+tieWindow {
+			near = append(near, c)
+		}
+	}
+	pick := int(atomic.AddUint64(&p.selectCounter, 1)-1) % len(near)
+	best := near[pick]
+	p.wsConnsMu.RLock()
+	sess := p.smuxConns[best.idx]
+	caps := p.channelCaps[best.idx]
+	p.wsConnsMu.RUnlock()
+	if sess == nil || sess.IsClosed() {
+		return nil, 0, 0, 0, fmt.Errorf("通道不可用")
+	}
+	decision := best.idx + 1
+	s, err := sess.OpenStream()
+	if err != nil {
+		return nil, 0, 0, 0, err
+	}
+	return s, best.idx + 1, decision, caps, nil
+}
+
+func (p *ECHPool) openTCPStream(target string) (*smux.Stream, int, int, error) {
+	s, chID, decision, caps, err := p.openBestStream()
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	if err := writeSmuxOpenHeader(s, streamKindTCP, ipStrategy, target); err != nil {
+		_ = s.Close()
+		return nil, 0, 0, err
+	}
+	if caps&protocolCapabilityTCPStatus != 0 {
+		_ = s.SetDeadline(time.Now().Add(cfg.DialTimeout))
+		var status byte
+		var code byte
+		var message string
+		if caps&protocolCapabilityOpenStatusCode != 0 {
+			status, code, message, err = readTCPOpenStatusCode(s)
+		} else {
+			status, message, err = readTCPOpenStatus(s)
+		}
+		_ = s.SetDeadline(time.Time{})
+		if err != nil {
+			_ = s.Close()
+			return nil, 0, 0, err
+		}
+		if status != tcpOpenStatusOK {
+			_ = s.Close()
+			return nil, 0, 0, &remoteOpenError{network: "TCP", status: status, code: code, message: message}
+		}
+	}
+	return s, chID, decision, nil
+}
+
+func (p *ECHPool) openUDPStream(target string) (*smux.Stream, int, int, error) {
+	s, chID, decision, caps, err := p.openBestStream()
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	if err := writeSmuxOpenHeader(s, streamKindUDP, ipStrategy, target); err != nil {
+		_ = s.Close()
+		return nil, 0, 0, err
+	}
+	if caps&protocolCapabilityUDPStatus != 0 {
+		_ = s.SetDeadline(time.Now().Add(cfg.DialTimeout))
+		var status byte
+		var code byte
+		var message string
+		if caps&protocolCapabilityOpenStatusCode != 0 {
+			status, code, message, err = readUDPOpenStatusCode(s)
+		} else {
+			status, message, err = readUDPOpenStatus(s)
+		}
+		_ = s.SetDeadline(time.Time{})
+		if err != nil {
+			_ = s.Close()
+			return nil, 0, 0, err
+		}
+		if status != udpOpenStatusOK {
+			_ = s.Close()
+			return nil, 0, 0, &remoteOpenError{network: "UDP", status: status, code: code, message: message}
+		}
+	}
+	return s, chID, decision, nil
+}
+
+// ======================== TCP Forwarder ========================
+
+func runTCPListener(ctx context.Context, rule string) {
+	lAddr, tAddr, err := parseTCPForwardRule(rule)
+	if err != nil {
+		log.Fatalf("[客户端] TCP转发地址解析失败: %v", err)
+	}
+	l, err := net.Listen("tcp", lAddr)
+	if err != nil {
+		log.Fatalf("[客户端] TCP监听失败: %v", err)
+	}
+	go func() {
+		<-ctx.Done()
+		_ = l.Close()
+	}()
+	log.Printf("[客户端] TCP转发: %s -> %s", lAddr, tAddr)
+	for {
+		c, err := l.Accept()
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			continue
+		}
+		go handleLocalTCP(c, tAddr)
+	}
+}
+
+func handleLocalTCP(c net.Conn, target string) {
+	stream, _, decision, err := echPool.openTCPStream(target)
+	if err != nil {
+		log.Printf("[客户端] %s TCP转发 打开失败 %s: %v", clientSourceAddr(c), target, err)
+		_ = c.Close()
+		return
+	}
+	logClientConnEvent(c, "TCP转发", target, decision, true)
+	defer logClientConnEvent(c, "TCP转发", target, decision, false)
+	proxyConnStream(c, stream)
+}
+
+// dialWebSocketWithECH：支持 ws:// 与 wss://；仅 wss 使用 TLS/ECH 逻辑
+func dialWebSocketWithECH(addr string, retries int, ip string, clientID string, channelID int) (*websocket.Conn, error) {
+	u, err := url.Parse(addr)
+	if err != nil {
+		return nil, err
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "wss" && scheme != "ws" {
+		return nil, fmt.Errorf("仅支持 ws:// 或 wss:// (当前: %s)", u.Scheme)
+	}
+
+	dialURL := *u
+	q := dialURL.Query()
+	if clientID != "" {
+		q.Set("client_id", clientID)
+	}
+	if channelID > 0 {
+		q.Set("channel_id", strconv.Itoa(channelID))
+	}
+	dialURL.RawQuery = q.Encode()
+	dialAddr := dialURL.String()
+
+	newDialer := func() websocket.Dialer {
+		dialer := websocket.Dialer{
+			HandshakeTimeout: cfg.WSHandshakeTimeout,
+			ReadBufferSize:   cfg.ReadBuf,
+			WriteBufferSize:  cfg.ReadBuf,
+		}
+		if token != "" {
+			dialer.Subprotocols = []string{token}
+		}
+		if ip != "" {
+			dialer.NetDial = func(network, address string) (net.Conn, error) {
+				_, port, _ := net.SplitHostPort(address)
+				if host, p, err := net.SplitHostPort(ip); err == nil {
+					return net.DialTimeout(network, net.JoinHostPort(host, p), cfg.DialTimeout)
+				}
+				return net.DialTimeout(network, net.JoinHostPort(ip, port), cfg.DialTimeout)
+			}
+		}
+		return dialer
+	}
+
+	if scheme == "ws" {
+		dialer := newDialer()
+		conn, resp, err := dialer.Dial(dialAddr, nil)
+		if err != nil {
+			if resp != nil && resp.StatusCode == http.StatusUnauthorized {
+				return nil, fmt.Errorf("认证失败：Token 不匹配或未提供")
+			}
+			return nil, err
+		}
+		return conn, nil
+	}
+
+	serverName := u.Hostname()
+	for i := 1; i <= retries; i++ {
+		tlsCfg, e := buildUnifiedTLSConfig(serverName)
+		if e != nil {
+			if i < retries {
+				_ = refreshECH()
+				time.Sleep(cfg.ECHRetryDelay)
+				continue
+			}
+			return nil, e
+		}
+
+		dialer := newDialer()
+		dialer.TLSClientConfig = tlsCfg
+
+		conn, resp, err := dialer.Dial(dialAddr, nil)
+		if err != nil {
+			if resp != nil && resp.StatusCode == http.StatusUnauthorized {
+				return nil, fmt.Errorf("认证失败：Token 不匹配或未提供")
+			}
+			if !fallback && (strings.Contains(err.Error(), "ECH") || strings.Contains(err.Error(), "ech")) && i < retries {
+				_ = refreshECH()
+				time.Sleep(cfg.ECHRetryDelay)
+				continue
+			}
+			return nil, err
+		}
+		return conn, nil
+	}
+	return nil, fmt.Errorf("连接失败")
+}
+
+// ======================== SOCKS5 / HTTP Proxy ========================

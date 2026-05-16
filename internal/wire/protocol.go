@@ -1,9 +1,11 @@
-package main
+package wire
 
 import (
 	"encoding/binary"
 	"fmt"
 	"io"
+
+	"x-tunnel/internal/netaddr"
 )
 
 const (
@@ -380,4 +382,126 @@ func readUDPReply(r io.Reader) (string, []byte, error) {
 		return "", nil, err
 	}
 	return addr, data, nil
+}
+
+const (
+	StreamKindTCP   = streamKindTCP
+	StreamKindUDP   = streamKindUDP
+	StreamKindPing  = streamKindPing
+	StreamKindHello = streamKindHello
+
+	ProtocolVersion                    = protocolVersion
+	ProtocolStatusOK                   = protocolStatusOK
+	ProtocolStatusUnsupportedVersion   = protocolStatusUnsupportedVersion
+	ProtocolStatusNoCommonCapabilities = protocolStatusNoCommonCapabilities
+
+	ProtocolCapabilityTCP            = protocolCapabilityTCP
+	ProtocolCapabilityUDP            = protocolCapabilityUDP
+	ProtocolCapabilityPing           = protocolCapabilityPing
+	ProtocolCapabilityIPStrategy     = protocolCapabilityIPStrategy
+	ProtocolCapabilityTCPStatus      = protocolCapabilityTCPStatus
+	ProtocolCapabilityUDPStatus      = protocolCapabilityUDPStatus
+	ProtocolCapabilityOpenStatusCode = protocolCapabilityOpenStatusCode
+
+	TCPOpenStatusOK    = tcpOpenStatusOK
+	TCPOpenStatusError = tcpOpenStatusError
+	UDPOpenStatusOK    = udpOpenStatusOK
+	UDPOpenStatusError = udpOpenStatusError
+
+	OpenStatusCodeNone          = openStatusCodeNone
+	OpenStatusCodeBadTarget     = openStatusCodeBadTarget
+	OpenStatusCodePolicyDenied  = openStatusCodePolicyDenied
+	OpenStatusCodeDialFailed    = openStatusCodeDialFailed
+	OpenStatusCodeResourceLimit = openStatusCodeResourceLimit
+
+	ProtocolHelloMagic  = protocolHelloMagic
+	MaxProtocolFieldLen = maxProtocolFieldLen
+)
+
+func IsSupportedStreamKind(kind byte) bool { return isSupportedStreamKind(kind) }
+
+func CurrentProtocolCapabilities() uint32 { return currentProtocolCapabilities() }
+
+func RequiredProtocolCapabilities() uint32 { return requiredProtocolCapabilities() }
+
+func CurrentProtocolHello() ProtocolHello { return currentProtocolHello() }
+
+func WriteProtocolHello(w io.Writer, hello ProtocolHello) error { return writeProtocolHello(w, hello) }
+
+func ReadProtocolHello(r io.Reader) (ProtocolHello, error) { return readProtocolHello(r) }
+
+func NegotiateProtocolHello(clientHello ProtocolHello) ProtocolHello {
+	return negotiateProtocolHello(clientHello)
+}
+
+func WriteTCPOpenStatus(w io.Writer, status byte, message string) error {
+	return writeTCPOpenStatus(w, status, message)
+}
+
+func ReadTCPOpenStatus(r io.Reader) (byte, string, error) { return readTCPOpenStatus(r) }
+
+func WriteTCPOpenStatusCode(w io.Writer, status byte, code byte, message string) error {
+	return writeTCPOpenStatusCode(w, status, code, message)
+}
+
+func ReadTCPOpenStatusCode(r io.Reader) (byte, byte, string, error) {
+	return readTCPOpenStatusCode(r)
+}
+
+func WriteUDPOpenStatus(w io.Writer, status byte, message string) error {
+	return writeUDPOpenStatus(w, status, message)
+}
+
+func ReadUDPOpenStatus(r io.Reader) (byte, string, error) { return readUDPOpenStatus(r) }
+
+func WriteUDPOpenStatusCode(w io.Writer, status byte, code byte, message string) error {
+	return writeUDPOpenStatusCode(w, status, code, message)
+}
+
+func ReadUDPOpenStatusCode(r io.Reader) (byte, byte, string, error) {
+	return readUDPOpenStatusCode(r)
+}
+
+func WriteOpenStatus(w io.Writer, fieldName string, status byte, message string) error {
+	return writeOpenStatus(w, fieldName, status, message)
+}
+
+func ReadOpenStatus(r io.Reader) (byte, string, error) { return readOpenStatus(r) }
+
+func WriteOpenStatusCode(w io.Writer, fieldName string, status byte, code byte, message string) error {
+	return writeOpenStatusCode(w, fieldName, status, code, message)
+}
+
+func ReadOpenStatusCode(r io.Reader) (byte, byte, string, error) {
+	return readOpenStatusCode(r)
+}
+
+func ReadSmuxOpenHeader(r io.Reader) (byte, byte, string, error) {
+	return readSmuxOpenHeader(r)
+}
+
+func WriteSmuxOpenHeader(w io.Writer, kind byte, strategy byte, target string) error {
+	return writeSmuxOpenHeader(w, kind, strategy, target)
+}
+
+func WriteChunk(w io.Writer, b []byte) error { return writeChunk(w, b) }
+
+func ReadChunk(r io.Reader) ([]byte, error) { return readChunk(r) }
+
+func WriteUDPReply(w io.Writer, addr string, payload []byte) error {
+	return writeUDPReply(w, addr, payload)
+}
+
+func ReadUDPReply(r io.Reader) (string, []byte, error) { return readUDPReply(r) }
+
+func ValidateProtocolFieldLen(name string, length int) error {
+	return validateProtocolFieldLen(name, length)
+}
+
+func WriteAll(w io.Writer, b []byte) error { return writeAll(w, b) }
+
+func WriteAllCount(w io.Writer, b []byte) (int, error) { return writeAllCount(w, b) }
+
+func validateHostPort(value string) error {
+	return netaddr.ValidateHostPort(value)
 }

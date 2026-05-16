@@ -2,7 +2,7 @@
 
 Status: current implementation snapshot.
 
-This document describes the wire behavior implemented in `x-tunnel.go`. It is intentionally conservative: any future change to these bytes must either remain backward-compatible or introduce explicit version/capability negotiation.
+This document describes the wire behavior implemented in `internal/wire` and used by the `cmd/x-tunnel` binary. It is intentionally conservative: any future change to these bytes must either remain backward-compatible or introduce explicit version/capability negotiation.
 
 Standards references used for local proxy behavior:
 
@@ -331,7 +331,7 @@ Successful CONNECT requests return `HTTP/1.1 200 Connection Established` and the
 ### Testability Risks
 
 - The project has unit coverage for protocol helpers and automated local integration coverage, but broader load, failure-injection, and cross-platform tests are still future work.
-- Protocol encoders/decoders are extracted into `protocol.go`; SOCKS5 parsing remains in the main file.
+- Protocol encoders/decoders live in `internal/wire`; SOCKS5 parsing remains in the app layer.
 
 ## 12. Evolution Rules
 

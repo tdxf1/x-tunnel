@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"bufio"
@@ -53,7 +53,7 @@ func buildIntegrationBinary(t *testing.T, ctx context.Context) string {
 			return
 		}
 		integrationBuildPath = filepath.Join(integrationBuildDir, "x-tunnel")
-		build := exec.CommandContext(ctx, "go", "build", "-o", integrationBuildPath, ".")
+		build := exec.CommandContext(ctx, "go", "build", "-o", integrationBuildPath, "../../cmd/x-tunnel")
 		integrationBuildOutput, integrationBuildErr = build.CombinedOutput()
 	})
 	if integrationBuildErr != nil {

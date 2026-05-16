@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"bufio"
@@ -8514,7 +8514,7 @@ func TestBuildSOCKS5UDPPacketRejectsInvalidPort(t *testing.T) {
 }
 
 func TestExampleConfigFilesLoad(t *testing.T) {
-	paths, err := filepath.Glob(filepath.Join("examples", "*.json"))
+	paths, err := filepath.Glob(filepath.Join("..", "..", "examples", "*.json"))
 	if err != nil {
 		t.Fatalf("glob examples: %v", err)
 	}
