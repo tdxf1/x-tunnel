@@ -1659,6 +1659,78 @@ func newTestWSNetConnPair(t *testing.T) (*wsNetConn, *wsNetConn) {
 	return client, serverConn
 }
 
+func TestDialWebSocketWithECHWSMetadata(t *testing.T) {
+	oldCfg := cfg
+	oldToken := token
+	t.Cleanup(func() {
+		cfg = oldCfg
+		token = oldToken
+	})
+	cfg.WSHandshakeTimeout = time.Second
+	cfg.DialTimeout = time.Second
+	cfg.ReadBuf = 1024
+	token = "ws-test-token"
+
+	type dialRequest struct {
+		clientID    string
+		channelID   string
+		subprotocol string
+	}
+	requests := make(chan dialRequest, 1)
+	upgrader := websocket.Upgrader{
+		CheckOrigin:  func(*http.Request) bool { return true },
+		Subprotocols: []string{"ws-test-token"},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		requests <- dialRequest{
+			clientID:    r.URL.Query().Get("client_id"),
+			channelID:   r.URL.Query().Get("channel_id"),
+			subprotocol: conn.Subprotocol(),
+		}
+		_ = conn.Close()
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, err := dialWebSocketWithECH(wsURL, 1, "", "client-123", 7)
+	if err != nil {
+		t.Fatalf("dialWebSocketWithECH returned error: %v", err)
+	}
+	_ = conn.Close()
+
+	select {
+	case req := <-requests:
+		if req.clientID != "client-123" || req.channelID != "7" || req.subprotocol != "ws-test-token" {
+			t.Fatalf("dial metadata = %#v, want client_id client-123 channel_id 7 subprotocol ws-test-token", req)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for websocket dial metadata")
+	}
+}
+
+func TestDialWebSocketWithECHMapsUnauthorized(t *testing.T) {
+	oldCfg := cfg
+	t.Cleanup(func() { cfg = oldCfg })
+	cfg.WSHandshakeTimeout = time.Second
+	cfg.DialTimeout = time.Second
+	cfg.ReadBuf = 1024
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	if _, err := dialWebSocketWithECH(wsURL, 1, "", "", 0); err == nil || !strings.Contains(err.Error(), "认证失败") {
+		t.Fatalf("dialWebSocketWithECH unauthorized err = %v", err)
+	}
+}
+
 func TestWSNetConnReadWrite(t *testing.T) {
 	client, server := newTestWSNetConnPair(t)
 	deadline := time.Now().Add(time.Second)

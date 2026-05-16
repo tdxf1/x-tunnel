@@ -1954,6 +1954,26 @@ Review:
 - UDP DNS ECH lookups now read up to the DNS message limit instead of truncating responses at 4096 bytes.
 - Loopback UDP DNS coverage proves large HTTPS/ECH answers are parsed end-to-end, while the DoH oversized-response guard remains covered.
 
+Post Phase 8 WebSocket dial metadata coverage:
+
+- [x] Cover `ws://` dialing with token subprotocol negotiation.
+- [x] Cover `client_id` and `channel_id` query metadata on WebSocket dial requests.
+- [x] Cover 401 WebSocket dial failures mapping to the explicit auth error.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'TestDialWebSocketWithECH(WSMetadata|MapsUnauthorized)|TestWebSocketRequestHasToken|TestWSNetConnReadWrite' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 65.6% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- `ws://` dialing now has direct coverage for token subprotocol negotiation and channel identity query parameters.
+- Unauthorized WebSocket upgrade responses are covered to keep the explicit auth error mapping stable.
+
 Commit frequency and quality assessment:
 
 - [x] Collect commit cadence, author, and churn metrics from Git history.
@@ -1963,7 +1983,7 @@ Commit frequency and quality assessment:
 
 Verification:
 
-- `git log --all --date=iso-strict --numstat`: assessed 124 commits from 2026-05-16 03:37:55+07:00 to 10:14:20+07:00.
+- `git log --all --date=iso-strict --numstat`: assessed 125 commits from 2026-05-16 03:37:55+07:00 to 10:17:38+07:00.
 - `git diff --check`: pass.
 - `go test -count=1 -timeout=2m ./...`: pass.
 - `go test -cover -count=1 -timeout=2m ./...`: pass, `coverage: 64.7% of statements`.
@@ -1973,7 +1993,7 @@ Verification:
 
 Review:
 
-- Commit cadence is an extreme single-day burst: 124 commits in 6.61 hours, median gap 3.03 minutes.
+- Commit cadence is an extreme single-day burst: 125 commits in 6.66 hours, median gap 3.04 minutes.
 - Commit hygiene is strong for small, typed commits: no WIP/fixup subjects found; prefixes are `fix`, `test`, `docs`, `feat`, `chore`, `refactor`, and `ci`.
 - Engineering quality signals are strongest around tests, CI, edge-case hardening, race checks, fuzz smoke checks, and verification logging.
 - Main maintainability risk is code organization: `x-tunnel.go` is 4307 lines with 161 functions, including several 100+ line functions.
