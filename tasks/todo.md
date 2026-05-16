@@ -2317,3 +2317,22 @@ Review:
 
 - SOCKS5 CONNECT now has a short real-smux success-path test, including the local success reply.
 - The test verifies TCP open metadata and request/response payload forwarding through `proxyConnStream`.
+
+Post Phase 8 ECHPool constructor coverage:
+
+- [x] Cover `NewECHPool` slot sizing with and without target IPs.
+- [x] Verify initial smux/RTT/capability slices are allocated with zero values.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'TestNewECHPoolInitializesSlots' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 71.5% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- ECHPool construction now has explicit coverage for connection slot sizing with and without target IP expansion.
+- The test verifies newly allocated channel state starts with nil sessions and zero RTT/capability values.

@@ -5050,6 +5050,32 @@ func TestNegotiateClientProtocolLegacyClose(t *testing.T) {
 	}
 }
 
+func TestNewECHPoolInitializesSlots(t *testing.T) {
+	withIPs := NewECHPool("wss://example.com/tunnel", 3, []string{"192.0.2.1", "2001:db8::1"}, "client-a")
+	if withIPs.wsServerAddr != "wss://example.com/tunnel" || withIPs.connectionNum != 3 || withIPs.clientID != "client-a" {
+		t.Fatalf("NewECHPool metadata = addr %q n %d client %q", withIPs.wsServerAddr, withIPs.connectionNum, withIPs.clientID)
+	}
+	if len(withIPs.targetIPs) != 2 || withIPs.targetIPs[0] != "192.0.2.1" || withIPs.targetIPs[1] != "2001:db8::1" {
+		t.Fatalf("NewECHPool targetIPs = %v", withIPs.targetIPs)
+	}
+	if len(withIPs.smuxConns) != 6 || len(withIPs.channelRTT) != 6 || len(withIPs.channelCaps) != 6 {
+		t.Fatalf("NewECHPool with IPs slice lengths = smux %d rtt %d caps %d, want 6", len(withIPs.smuxConns), len(withIPs.channelRTT), len(withIPs.channelCaps))
+	}
+	for i := range withIPs.smuxConns {
+		if withIPs.smuxConns[i] != nil || withIPs.channelRTT[i] != 0 || withIPs.channelCaps[i] != 0 {
+			t.Fatalf("NewECHPool slot %d initialized to smux=%v rtt=%d caps=%d, want zero values", i, withIPs.smuxConns[i], withIPs.channelRTT[i], withIPs.channelCaps[i])
+		}
+	}
+
+	withoutIPs := NewECHPool("ws://example.com/tunnel", 2, nil, "client-b")
+	if len(withoutIPs.targetIPs) != 0 {
+		t.Fatalf("NewECHPool without IPs targetIPs = %v, want empty", withoutIPs.targetIPs)
+	}
+	if len(withoutIPs.smuxConns) != 2 || len(withoutIPs.channelRTT) != 2 || len(withoutIPs.channelCaps) != 2 {
+		t.Fatalf("NewECHPool without IPs slice lengths = smux %d rtt %d caps %d, want 2", len(withoutIPs.smuxConns), len(withoutIPs.channelRTT), len(withoutIPs.channelCaps))
+	}
+}
+
 func TestECHPoolOpenUDPStreamWritesHeader(t *testing.T) {
 	serverSession, clientSession := newProtocolNegotiationSmuxPair(t)
 	oldIPStrategy := ipStrategy
