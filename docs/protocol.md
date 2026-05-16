@@ -274,7 +274,7 @@ Non-CONNECT absolute-form requests are accepted only with the `http` scheme. Abs
 
 - WebSocket token auth is a bearer-token subprotocol check only.
 - `-insecure` and ECH fallback behavior must stay explicit in logs because misuse weakens TLS validation.
-- Server-side egress policy is pre-dial only: CIDR rules apply to literal IP targets, and host rules apply to literal domain targets before DNS resolution. It does not prove the final resolved IP for a domain.
+- Server-side egress policy is pre-dial only: CIDR rules apply to literal IP targets, and host rules apply to literal domain targets before DNS resolution. `allow-host` does not allow literal IP targets, `deny-host` alone does not block literal IP targets, and host matches do not prove the final resolved IP for a domain.
 
 ### Testability Risks
 

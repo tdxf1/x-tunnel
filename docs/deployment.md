@@ -41,6 +41,19 @@ Policy order:
 4. Domain targets are still rejected when only CIDR allow rules exist because the server cannot prove the pre-dial domain belongs to an allowed CIDR.
 5. Domain targets are allowed under deny-only policy unless the hostname matches `-deny-host`.
 
+Decision table:
+
+| Server policy | Literal IP target | Domain target |
+| --- | --- | --- |
+| No target policy | Allowed | Allowed |
+| `-deny-target` only | Rejected if the IP matches a denied CIDR; otherwise allowed | Allowed |
+| `-allow-target` only | Allowed only if the IP matches an allowed CIDR | Rejected |
+| `-deny-host` only | Allowed | Rejected if the normalized hostname matches a denied host pattern; otherwise allowed |
+| `-allow-host` only | Rejected | Allowed only if the normalized hostname matches an allowed host pattern |
+| CIDR and host rules together | Decided only by `-deny-target` / `-allow-target` | Decided only by `-deny-host` / `-allow-host` |
+
+Host patterns are matched against the literal requested hostname after lowercasing and removing one trailing dot. These checks run before DNS resolution. They do not prove the final resolved IP for a domain, and they do not protect against an allowed domain resolving to an unexpected network.
+
 ## Resource Limits
 
 Use `-max-clients` and `-max-streams` on the server to cap active client sessions and active smux streams per client session:

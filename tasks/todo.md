@@ -1113,3 +1113,16 @@ Verification:
 - `go test -count=1 ./...`: pass.
 - `go test -cover -count=1 ./...`: pass, `coverage: 47.3% of statements`.
 - `go test -race -count=1 ./...`: pass.
+
+Post Phase 8 target policy documentation truth table:
+
+- [x] Add a target policy decision table for IP/domain targets across CIDR and host rules.
+- [x] Clarify host wildcard and pre-DNS security boundary semantics.
+- [x] Run focused policy tests plus full/coverage verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'Test(TargetPolicy|ParseTargetPolicy|ValidateServerStartupConfig|IntegrationTCPStatusRejectsBlockedTarget)' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 47.3% of statements`.
