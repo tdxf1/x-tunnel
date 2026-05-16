@@ -1992,6 +1992,47 @@ func TestSOCKS5UDPRelayRoundTripAndClose(t *testing.T) {
 	}
 }
 
+func TestSOCKS5UDPRelayReadRejectsOversizedPayload(t *testing.T) {
+	relayConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("listen SOCKS5 relay UDP: %v", err)
+	}
+	defer relayConn.Close()
+	localConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("listen local UDP: %v", err)
+	}
+	tcpServer, tcpClient := net.Pipe()
+	defer tcpClient.Close()
+	relay := &SOCKS5UDPRelay{
+		tcpConn: tcpServer,
+		udpConn: localConn,
+	}
+	defer relay.Close()
+
+	response, err := buildSOCKS5UDPPacket("8.8.8.8", 53, []byte("too-large"))
+	if err != nil {
+		t.Fatalf("build SOCKS5 UDP response: %v", err)
+	}
+	if _, err := relayConn.WriteToUDP(response, localConn.LocalAddr().(*net.UDPAddr)); err != nil {
+		t.Fatalf("write SOCKS5 UDP response: %v", err)
+	}
+	if err := relay.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SOCKS5UDPRelay.SetReadDeadline returned error: %v", err)
+	}
+	buf := make([]byte, 3)
+	n, src, err := relay.Read(buf)
+	if err == nil {
+		t.Fatal("SOCKS5UDPRelay.Read accepted oversized payload")
+	}
+	if n != 0 || src != "" {
+		t.Fatalf("SOCKS5UDPRelay.Read = n %d src %q on oversized payload, want zero values", n, src)
+	}
+	if !strings.Contains(err.Error(), "exceeds buffer") {
+		t.Fatalf("SOCKS5UDPRelay.Read error = %v, want exceeds buffer", err)
+	}
+}
+
 func startSOCKS5UDPAssociateResponse(t *testing.T, response []byte) (string, func()) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

@@ -1820,6 +1820,9 @@ func (r *SOCKS5UDPRelay) Read(buffer []byte) (int, string, error) {
 	if err != nil {
 		return 0, "", err
 	}
+	if len(payload) > len(buffer) {
+		return 0, "", fmt.Errorf("SOCKS5 UDP payload length %d exceeds buffer length %d", len(payload), len(buffer))
+	}
 	copy(buffer, payload)
 	return len(payload), srcAddr, nil
 }

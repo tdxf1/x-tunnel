@@ -1673,6 +1673,24 @@ Review:
 - Client-side protocol negotiation now has smux-level coverage for successful hello request/response handling.
 - Legacy hello close and timeout/EOF classification now have direct regression tests.
 
+Post Phase 8 SOCKS5 UDP relay read bounds:
+
+- [x] Return an error when an upstream SOCKS5 UDP response payload exceeds the caller buffer.
+- [x] Add focused unit coverage so `SOCKS5UDPRelay.Read` never returns `n > len(buffer)`.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'TestSOCKS5UDPRelay(ReadRejectsOversizedPayload|RoundTripAndClose)' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 60.0% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- `SOCKS5UDPRelay.Read` now returns an explicit oversize error instead of returning a length larger than the caller buffer.
+
 Post Phase 8 hostname trailing-dot compatibility:
 
 - [x] Preserve valid trailing-dot DNS hostnames while rejecting malformed hostnames.
