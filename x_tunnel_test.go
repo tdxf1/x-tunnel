@@ -4657,6 +4657,99 @@ func TestECHPoolOpenTCPStreamStatusError(t *testing.T) {
 	}
 }
 
+func TestECHPoolOpenBestStreamNoUsableSessions(t *testing.T) {
+	pool := &ECHPool{}
+	if _, _, _, _, err := pool.openBestStream(); err == nil {
+		t.Fatal("openBestStream with empty pool returned nil error")
+	}
+
+	serverSession, clientSession := newProtocolNegotiationSmuxPair(t)
+	_ = serverSession.Close()
+	_ = clientSession.Close()
+	pool = &ECHPool{
+		smuxConns:  []*smux.Session{nil, clientSession},
+		channelRTT: []int64{0, 0},
+	}
+	if _, _, _, _, err := pool.openBestStream(); err == nil {
+		t.Fatal("openBestStream with nil/closed sessions returned nil error")
+	}
+}
+
+func TestECHPoolOpenBestStreamSkipsNilSessions(t *testing.T) {
+	serverSession, clientSession := newProtocolNegotiationSmuxPair(t)
+	waitAccepted := expectAcceptedSmuxStream(t, serverSession)
+	pool := &ECHPool{
+		smuxConns:   []*smux.Session{nil, clientSession},
+		channelRTT:  []int64{0, int64(5 * time.Millisecond)},
+		channelCaps: []uint32{0, protocolCapabilityTCPStatus},
+	}
+
+	stream, chID, decision, caps, err := pool.openBestStream()
+	if err != nil {
+		t.Fatalf("openBestStream returned error: %v", err)
+	}
+	_ = stream.Close()
+	if chID != 2 || decision != 2 || caps != protocolCapabilityTCPStatus {
+		t.Fatalf("openBestStream = chID %d decision %d caps 0x%x, want 2/2/TCPStatus", chID, decision, caps)
+	}
+	waitAccepted()
+}
+
+func TestECHPoolOpenBestStreamRoundRobinNearRTT(t *testing.T) {
+	serverSession1, clientSession1 := newProtocolNegotiationSmuxPair(t)
+	serverSession2, clientSession2 := newProtocolNegotiationSmuxPair(t)
+	waitAccepted1 := expectAcceptedSmuxStream(t, serverSession1)
+	waitAccepted2 := expectAcceptedSmuxStream(t, serverSession2)
+	pool := &ECHPool{
+		smuxConns:   []*smux.Session{clientSession1, clientSession2},
+		channelRTT:  []int64{int64(5 * time.Millisecond), int64(8 * time.Millisecond)},
+		channelCaps: []uint32{protocolCapabilityTCP, protocolCapabilityUDP},
+	}
+
+	stream, chID, decision, caps, err := pool.openBestStream()
+	if err != nil {
+		t.Fatalf("first openBestStream returned error: %v", err)
+	}
+	_ = stream.Close()
+	if chID != 1 || decision != 1 || caps != protocolCapabilityTCP {
+		t.Fatalf("first openBestStream = chID %d decision %d caps 0x%x, want 1/1/TCP", chID, decision, caps)
+	}
+
+	stream, chID, decision, caps, err = pool.openBestStream()
+	if err != nil {
+		t.Fatalf("second openBestStream returned error: %v", err)
+	}
+	_ = stream.Close()
+	if chID != 2 || decision != 2 || caps != protocolCapabilityUDP {
+		t.Fatalf("second openBestStream = chID %d decision %d caps 0x%x, want 2/2/UDP", chID, decision, caps)
+	}
+	waitAccepted1()
+	waitAccepted2()
+}
+
+func expectAcceptedSmuxStream(t *testing.T, sess *smux.Session) func() {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		stream, err := sess.AcceptStream()
+		if err == nil {
+			_ = stream.Close()
+		}
+		done <- err
+	}()
+	return func() {
+		t.Helper()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("accept smux stream: %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for accepted smux stream")
+		}
+	}
+}
+
 func TestIsLegacyProtocolHelloError(t *testing.T) {
 	tests := []struct {
 		name string

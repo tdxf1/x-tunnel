@@ -2014,6 +2014,26 @@ Review:
 - Client stream opening now has direct protocol coverage for UDP open headers, including the selected IP strategy and target authority.
 - Negotiated TCPStatus error handling is covered at the ECHPool boundary, keeping local proxy failure mapping grounded in the stream-open path.
 
+Post Phase 8 ECHPool stream selection coverage:
+
+- [x] Cover `openBestStream` returning an error when no usable smux sessions exist.
+- [x] Cover selection skipping nil/closed sessions.
+- [x] Cover near-RTT round-robin selection across multiple healthy sessions.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'TestECHPoolOpen(BestStream|UDPStream|TCPStream)' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 66.6% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- ECHPool stream selection now has regression coverage for empty pools, unusable sessions, and nil-session skipping.
+- Near-RTT round-robin behavior is covered across two healthy smux sessions, including returned channel decision metadata and capability propagation.
+
 Commit frequency and quality assessment:
 
 - [x] Collect commit cadence, author, and churn metrics from Git history.
