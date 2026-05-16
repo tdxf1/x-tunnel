@@ -1656,9 +1656,22 @@ Review:
 
 Post Phase 8 client protocol negotiation coverage:
 
-- [ ] Add smux-level coverage for successful client hello negotiation.
-- [ ] Add coverage for legacy hello close/error classification.
-- [ ] Run focused/full/coverage/race verification and commit.
+- [x] Add smux-level coverage for successful client hello negotiation.
+- [x] Add coverage for legacy hello close/error classification.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'Test(NegotiateClientProtocol|IsLegacyProtocolHelloError)' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 60.0% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- Client-side protocol negotiation now has smux-level coverage for successful hello request/response handling.
+- Legacy hello close and timeout/EOF classification now have direct regression tests.
 
 Post Phase 8 hostname trailing-dot compatibility:
 

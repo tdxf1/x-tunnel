@@ -3744,6 +3744,135 @@ func TestNegotiateProtocolHello(t *testing.T) {
 	}
 }
 
+type protocolTimeoutTestError struct{}
+
+func (protocolTimeoutTestError) Error() string   { return "timeout" }
+func (protocolTimeoutTestError) Timeout() bool   { return true }
+func (protocolTimeoutTestError) Temporary() bool { return false }
+
+func newProtocolNegotiationSmuxPair(t *testing.T) (*smux.Session, *smux.Session) {
+	t.Helper()
+	serverConn, clientConn := net.Pipe()
+	serverSession, err := smux.Server(serverConn, nil)
+	if err != nil {
+		t.Fatalf("smux server: %v", err)
+	}
+	clientSession, err := smux.Client(clientConn, nil)
+	if err != nil {
+		t.Fatalf("smux client: %v", err)
+	}
+	t.Cleanup(func() {
+		serverSession.Close()
+		clientSession.Close()
+		serverConn.Close()
+		clientConn.Close()
+	})
+	return serverSession, clientSession
+}
+
+func TestNegotiateClientProtocolSuccess(t *testing.T) {
+	serverSession, clientSession := newProtocolNegotiationSmuxPair(t)
+	serverDone := make(chan error, 1)
+	go func() {
+		stream, err := serverSession.AcceptStream()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer stream.Close()
+		if err := stream.SetDeadline(time.Now().Add(time.Second)); err != nil {
+			serverDone <- err
+			return
+		}
+		kind, strategy, target, err := readSmuxOpenHeader(stream)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if kind != streamKindHello || strategy != IPStrategyDefault || target != "" {
+			serverDone <- fmt.Errorf("hello open header = kind %d strategy %d target %q", kind, strategy, target)
+			return
+		}
+		hello, err := readProtocolHello(stream)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		serverDone <- writeProtocolHello(stream, negotiateProtocolHello(hello))
+	}()
+
+	caps, legacy, err := negotiateClientProtocol(clientSession, time.Second)
+	if err != nil {
+		t.Fatalf("negotiateClientProtocol returned error: %v", err)
+	}
+	if legacy {
+		t.Fatal("negotiateClientProtocol reported legacy mode on successful hello")
+	}
+	if caps != currentProtocolCapabilities() {
+		t.Fatalf("negotiateClientProtocol caps = 0x%x, want 0x%x", caps, currentProtocolCapabilities())
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("server hello handler returned error: %v", err)
+	}
+}
+
+func TestNegotiateClientProtocolLegacyClose(t *testing.T) {
+	serverSession, clientSession := newProtocolNegotiationSmuxPair(t)
+	serverDone := make(chan error, 1)
+	go func() {
+		stream, err := serverSession.AcceptStream()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer stream.Close()
+		if err := stream.SetDeadline(time.Now().Add(time.Second)); err != nil {
+			serverDone <- err
+			return
+		}
+		if _, _, _, err := readSmuxOpenHeader(stream); err != nil {
+			serverDone <- err
+			return
+		}
+		if _, err := readProtocolHello(stream); err != nil {
+			serverDone <- err
+			return
+		}
+		serverDone <- nil
+	}()
+
+	caps, legacy, err := negotiateClientProtocol(clientSession, time.Second)
+	if err != nil {
+		t.Fatalf("negotiateClientProtocol legacy close returned error: %v", err)
+	}
+	if !legacy || caps != 0 {
+		t.Fatalf("negotiateClientProtocol legacy close = caps 0x%x legacy %v, want caps 0 legacy true", caps, legacy)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("server legacy handler returned error: %v", err)
+	}
+}
+
+func TestIsLegacyProtocolHelloError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "EOF", err: io.EOF, want: true},
+		{name: "unexpected EOF", err: io.ErrUnexpectedEOF, want: true},
+		{name: "timeout", err: protocolTimeoutTestError{}, want: true},
+		{name: "ordinary error", err: errors.New("bad magic"), want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isLegacyProtocolHelloError(tt.err); got != tt.want {
+				t.Fatalf("isLegacyProtocolHelloError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestChunkRoundTrip(t *testing.T) {
 	var buf bytes.Buffer
 	payload := []byte("hello")
