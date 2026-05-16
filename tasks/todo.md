@@ -1098,3 +1098,18 @@ Verification:
 - `go test -run TestIntegrationMaxClientsRejectsNewClient -count=1 ./...`: pass.
 - `go test -count=1 ./...`: pass.
 - `go test -cover -count=1 ./...`: pass, `coverage: 47.3% of statements`.
+
+Post Phase 8 smux ping stream deadline:
+
+- [x] Apply `RTTProbeTimeout` while the server reads ping payloads.
+- [x] Preserve normal ping echo behavior.
+- [x] Add focused tests for ping echo and half-open ping streams.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'Test(HandleSmuxStreamPing|IntegrationMaxClientsRejectsNewClient)' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 47.3% of statements`.
+- `go test -race -count=1 ./...`: pass.

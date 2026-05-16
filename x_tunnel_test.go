@@ -2058,6 +2058,119 @@ func TestHandleSmuxStreamRejectsUnsupportedKind(t *testing.T) {
 	}
 }
 
+func openAcceptedSmuxTestStream(t *testing.T, kind byte) (*smux.Stream, *smux.Stream) {
+	t.Helper()
+
+	serverConn, clientConn := net.Pipe()
+	serverSession, err := smux.Server(serverConn, nil)
+	if err != nil {
+		t.Fatalf("smux server: %v", err)
+	}
+	clientSession, err := smux.Client(clientConn, nil)
+	if err != nil {
+		t.Fatalf("smux client: %v", err)
+	}
+
+	t.Cleanup(func() {
+		serverSession.Close()
+		clientSession.Close()
+		serverConn.Close()
+		clientConn.Close()
+	})
+
+	accepted := make(chan *smux.Stream, 1)
+	acceptErr := make(chan error, 1)
+	go func() {
+		stream, err := serverSession.AcceptStream()
+		if err != nil {
+			acceptErr <- err
+			return
+		}
+		accepted <- stream
+	}()
+
+	clientStream, err := clientSession.OpenStream()
+	if err != nil {
+		t.Fatalf("open smux stream: %v", err)
+	}
+	t.Cleanup(func() {
+		clientStream.Close()
+	})
+	if err := clientStream.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set client stream deadline: %v", err)
+	}
+	if err := writeSmuxOpenHeader(clientStream, kind, IPStrategyDefault, ""); err != nil {
+		t.Fatalf("write smux open header: %v", err)
+	}
+
+	select {
+	case serverStream := <-accepted:
+		return clientStream, serverStream
+	case err := <-acceptErr:
+		t.Fatalf("accept smux stream: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for accepted smux stream")
+	}
+	return nil, nil
+}
+
+func TestHandleSmuxStreamPingEcho(t *testing.T) {
+	oldCfg := cfg
+	defer func() {
+		cfg = oldCfg
+	}()
+	cfg.RTTProbeTimeout = time.Second
+
+	clientStream, serverStream := openAcceptedSmuxTestStream(t, streamKindPing)
+	payload := []byte("12345678")
+	if err := writeAll(clientStream, payload); err != nil {
+		t.Fatalf("write ping payload: %v", err)
+	}
+
+	done := make(chan struct{})
+	session := &ClientSession{clientID: "ping-echo-test", channels: make(map[uint64]*WSChannel)}
+	go func() {
+		defer close(done)
+		handleSmuxStream(session, &WSChannel{id: 1, session: session}, serverStream)
+	}()
+
+	ack := make([]byte, len(payload))
+	if _, err := io.ReadFull(clientStream, ack); err != nil {
+		t.Fatalf("read ping ack: %v", err)
+	}
+	if !bytes.Equal(ack, payload) {
+		t.Fatalf("ping ack = %q, want %q", ack, payload)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for ping echo handler")
+	}
+}
+
+func TestHandleSmuxStreamPingDeadline(t *testing.T) {
+	oldCfg := cfg
+	defer func() {
+		cfg = oldCfg
+	}()
+	cfg.RTTProbeTimeout = 50 * time.Millisecond
+
+	_, serverStream := openAcceptedSmuxTestStream(t, streamKindPing)
+	done := make(chan struct{})
+	session := &ClientSession{clientID: "ping-deadline-test", channels: make(map[uint64]*WSChannel)}
+	go func() {
+		defer close(done)
+		handleSmuxStream(session, &WSChannel{id: 1, session: session}, serverStream)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for half-open ping stream handler")
+	}
+}
+
 func TestHandleSmuxStreamRejectsMalformedTCPTargetWithStatus(t *testing.T) {
 	oldTargetRejects := atomic.LoadUint64(&serverTargetRejectSeq)
 	defer atomic.StoreUint64(&serverTargetRejectSeq, oldTargetRejects)

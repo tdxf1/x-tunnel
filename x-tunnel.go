@@ -2751,11 +2751,13 @@ func handleSmuxStream(session *ClientSession, ch *WSChannel, stream *smux.Stream
 		atomic.AddUint64(&serverProtocolOKSeq, 1)
 		log.Printf("[服务端] 客户ID:%s 协议协商成功: version=%d caps=0x%x, 通道:%d", shortID(session.clientID), response.Version, response.Capabilities, ch.id)
 	case streamKindPing:
+		_ = stream.SetDeadline(time.Now().Add(cfg.RTTProbeTimeout))
+		defer stream.SetDeadline(time.Time{})
 		payload := make([]byte, 8)
 		if _, err := io.ReadFull(stream, payload); err != nil {
 			return
 		}
-		_, _ = stream.Write(payload)
+		_ = writeAll(stream, payload)
 	case streamKindTCP:
 		log.Printf("[服务端] 客户ID:%s TCP 打开: %s, 通道:%d", shortID(session.clientID), target, ch.id)
 		sendOpenStatus := atomic.LoadUint32(&ch.capabilities)&protocolCapabilityTCPStatus != 0
