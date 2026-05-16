@@ -6454,6 +6454,98 @@ func TestUDPAssociationSendDropsChangedTarget(t *testing.T) {
 	}
 }
 
+func TestUDPAssociationLoopSendsParsedPacketOverSmux(t *testing.T) {
+	oldIPStrategy := ipStrategy
+	oldBlockPorts := udpBlockPorts
+	t.Cleanup(func() {
+		ipStrategy = oldIPStrategy
+		udpBlockPorts = oldBlockPorts
+	})
+	ipStrategy = IPStrategyDefault
+	udpBlockPorts = map[int]struct{}{}
+
+	relayConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatalf("listen relay udp: %v", err)
+	}
+	defer relayConn.Close()
+	clientConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatalf("listen client udp: %v", err)
+	}
+	defer clientConn.Close()
+
+	tcpServer, tcpClient := net.Pipe()
+	defer tcpServer.Close()
+	defer tcpClient.Close()
+	serverSession, clientSession := newProtocolNegotiationSmuxPair(t)
+	pool := &ECHPool{
+		smuxConns:   []*smux.Session{clientSession},
+		channelRTT:  []int64{int64(5 * time.Millisecond)},
+		channelCaps: []uint32{currentProtocolCapabilities()},
+	}
+	assoc := &UDPAssociation{
+		id:          3,
+		tcpConn:     tcpServer,
+		udpListener: relayConn,
+		pool:        pool,
+		active:      true,
+		channelID:   -1,
+	}
+
+	serverDone := make(chan error, 1)
+	go func() {
+		stream, err := serverSession.AcceptStream()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer stream.Close()
+		if err := stream.SetDeadline(time.Now().Add(time.Second)); err != nil {
+			serverDone <- err
+			return
+		}
+		kind, strategy, target, err := readSmuxOpenHeader(stream)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if kind != streamKindUDP || strategy != IPStrategyDefault || target != "8.8.8.8:53" {
+			serverDone <- fmt.Errorf("UDP association header = kind %d strategy %d target %q", kind, strategy, target)
+			return
+		}
+		chunk, err := readChunk(stream)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if string(chunk) != "dns-query" {
+			serverDone <- fmt.Errorf("UDP association chunk = %q", chunk)
+			return
+		}
+		serverDone <- nil
+	}()
+
+	go assoc.loop()
+	packet, err := buildSOCKS5UDPPacket("8.8.8.8", 53, []byte("dns-query"))
+	if err != nil {
+		t.Fatalf("build SOCKS5 UDP packet: %v", err)
+	}
+	if _, err := clientConn.WriteToUDP(packet, relayConn.LocalAddr().(*net.UDPAddr)); err != nil {
+		t.Fatalf("write SOCKS5 UDP packet: %v", err)
+	}
+
+	select {
+	case err := <-serverDone:
+		if err != nil {
+			t.Fatalf("server UDP association handler: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for UDP association smux packet")
+	}
+	assoc.Close()
+}
+
 func TestBuildSOCKS5UDPPacketRejectsOversizedDomain(t *testing.T) {
 	if _, err := buildSOCKS5UDPPacket(strings.Repeat("x", 256), 53, nil); err == nil {
 		t.Fatal("buildSOCKS5UDPPacket accepted oversized domain")

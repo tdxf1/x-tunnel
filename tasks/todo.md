@@ -2336,3 +2336,23 @@ Review:
 
 - ECHPool construction now has explicit coverage for connection slot sizing with and without target IP expansion.
 - The test verifies newly allocated channel state starts with nil sessions and zero RTT/capability values.
+
+Post Phase 8 UDP association loop coverage:
+
+- [x] Cover UDP listener packet parsing through `UDPAssociation.loop`.
+- [x] Verify `openUDPStream` receives the parsed target and chunk payload.
+- [x] Keep the test on real loopback UDP sockets and smux sessions.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'TestUDPAssociationLoopSendsParsedPacketOverSmux|TestUDPAssociationSendWritesBoundTarget|TestUDPAssociationSendDropsChangedTarget' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 72.9% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- UDP association loop now has real loopback UDP and smux coverage for parsed SOCKS5 UDP packets.
+- The test verifies target parsing, UDP stream opening, and payload chunk forwarding into the smux stream.
