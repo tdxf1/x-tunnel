@@ -3080,6 +3080,64 @@ func TestSocks5ConnectHandlesProgressiveShortWrites(t *testing.T) {
 	}
 }
 
+func TestSocks5ConnectAddressFamilies(t *testing.T) {
+	ipv6Target := net.ParseIP("2001:db8::1").To16()
+	ipv6Bound := net.ParseIP("2001:db8::2").To16()
+	if ipv6Target == nil || ipv6Bound == nil {
+		t.Fatal("failed to parse IPv6 test addresses")
+	}
+	domainReq := []byte{0x05, 0x01, 0x00, 0x03, byte(len("example.com"))}
+	domainReq = append(domainReq, []byte("example.com")...)
+	domainReq = append(domainReq, 0x01, 0xbb)
+	ipv6Req := []byte{0x05, 0x01, 0x00, 0x04}
+	ipv6Req = append(ipv6Req, ipv6Target...)
+	ipv6Req = append(ipv6Req, 0x01, 0xbb)
+	domainResp := []byte{0x05, 0x00, 0x00, 0x03, byte(len("proxy"))}
+	domainResp = append(domainResp, []byte("proxy")...)
+	domainResp = append(domainResp, 0x1f, 0x90)
+	ipv6Resp := []byte{0x05, 0x00, 0x00, 0x04}
+	ipv6Resp = append(ipv6Resp, ipv6Bound...)
+	ipv6Resp = append(ipv6Resp, 0x1f, 0x90)
+
+	tests := []struct {
+		name     string
+		target   string
+		wantReq  []byte
+		response []byte
+	}{
+		{name: "domain", target: "example.com:443", wantReq: domainReq, response: domainResp},
+		{name: "ipv6", target: "[2001:db8::1]:443", wantReq: ipv6Req, response: ipv6Resp},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, client := net.Pipe()
+			defer server.Close()
+			defer client.Close()
+			_ = server.SetDeadline(time.Now().Add(time.Second))
+			_ = client.SetDeadline(time.Now().Add(time.Second))
+
+			errCh := make(chan error, 1)
+			go func() {
+				errCh <- socks5Connect(client, tt.target)
+			}()
+
+			req := make([]byte, len(tt.wantReq))
+			if _, err := io.ReadFull(server, req); err != nil {
+				t.Fatalf("read SOCKS5 connect request: %v", err)
+			}
+			if !bytes.Equal(req, tt.wantReq) {
+				t.Fatalf("SOCKS5 connect request = %v, want %v", req, tt.wantReq)
+			}
+			if _, err := server.Write(tt.response); err != nil {
+				t.Fatalf("write SOCKS5 connect response: %v", err)
+			}
+			if err := <-errCh; err != nil {
+				t.Fatalf("socks5Connect returned error: %v", err)
+			}
+		})
+	}
+}
+
 func TestSocks5ConnectRejectsInvalidTargetPort(t *testing.T) {
 	tests := []string{
 		":80",

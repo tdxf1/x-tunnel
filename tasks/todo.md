@@ -2730,3 +2730,23 @@ Review:
 
 - HTTPS/SVCB record target names now use the same bounded DNS name parser as DNS question and answer names.
 - The parser keeps returning an empty ECH value for malformed HTTPS RDATA, but no longer advances offsets with unchecked label lengths.
+
+Post Phase 8 SOCKS5 CONNECT address family coverage:
+
+- [x] Cover upstream SOCKS5 CONNECT request bytes for domain targets.
+- [x] Cover upstream SOCKS5 CONNECT request bytes for IPv6 targets.
+- [x] Cover successful domain and IPv6 bound-address response parsing.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `go test -run 'TestSocks5Connect|TestDialViaSocks5|TestUpstreamSOCKS5' -count=1 ./...`: pass.
+- `git diff --check`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 75.8% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- Upstream SOCKS5 CONNECT now has byte-level coverage for domain and IPv6 request encoding.
+- Successful domain-name and IPv6 bound-address responses are covered, not only IPv4 response parsing.
