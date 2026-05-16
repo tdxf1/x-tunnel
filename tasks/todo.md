@@ -2846,3 +2846,23 @@ Review:
 
 - Server-side UDPStatus success now has loopback smux coverage: OK status is sent before any UDP chunk handling.
 - The test confirms the status frame does not disturb subsequent UDP datagram proxying and reply framing.
+
+Post Phase 8 WebSocket metadata empty value validation:
+
+- [x] Reject present-but-empty `client_id` query parameters.
+- [x] Reject present-but-empty `channel_id` query parameters.
+- [x] Keep absent metadata defaults unchanged.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `go test -run 'TestParseWSChannelMetadata|TestDialWebSocketWithECHWSMetadata|TestDialWebSocketWithECHWSSFallbackInsecure' -count=1 ./...`: pass.
+- `git diff --check`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 76.3% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- WebSocket metadata parsing already rejects present-but-empty `client_id` and `channel_id` values while preserving generated defaults when the parameters are absent.
+- The focused tests cover generated metadata, valid explicit metadata, empty values, malformed values, and WSS/WS dial metadata emission.
