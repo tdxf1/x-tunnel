@@ -3118,3 +3118,22 @@ Review:
 
 - Client metrics now expose the negotiated capability bitset for each channel.
 - Unit and local integration tests assert the new metric, with the integration assertion derived from `currentProtocolCapabilities()` instead of a stale hard-coded value.
+
+Post Phase 10 SOCKS5 policy-denied integration assertion:
+
+- [x] Assert target-policy-blocked SOCKS5 CONNECT returns reply `0x02`.
+- [x] Keep the existing HTTP `403` and UDP blocked-target assertions intact.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `go test -run 'TestIntegrationTCPStatusRejectsBlockedTarget' -count=1 ./...`: pass.
+- `git diff --check`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 77.5% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- The blocked-target integration path now checks the exact SOCKS5 reply code `0x02` for structured policy denials.
+- The same test still verifies HTTP proxy `403`, UDP blocked-target timeout behavior, and server target-rejection metrics.

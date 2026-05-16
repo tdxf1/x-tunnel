@@ -599,8 +599,8 @@ func TestIntegrationTCPStatusRejectsBlockedTarget(t *testing.T) {
 	waitTCP(t, ctx, httpProxyAddr, client)
 	waitLogContains(t, ctx, clientLog, "协议协商成功", client)
 
-	if got := socks5ConnectReplyCode(t, socksAddr, "127.0.0.1:1"); got == 0x00 {
-		t.Fatal("SOCKS5 connect unexpectedly succeeded for blocked target")
+	if got := socks5ConnectReplyCode(t, socksAddr, "127.0.0.1:1"); got != 0x02 {
+		t.Fatalf("SOCKS5 blocked target reply = 0x%02x, want 0x02", got)
 	}
 	assertMetricValue(t, fetchHTTP(t, "http://"+metricsAddr+"/metrics"), "x_tunnel_server_target_rejections_total", "1")
 	if got := fetchViaHTTPProxyStatus(t, httpProxyAddr, "http://127.0.0.1:1/blocked"); got != http.StatusForbidden {
