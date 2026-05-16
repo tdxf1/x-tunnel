@@ -4773,6 +4773,59 @@ func TestECHPoolOpenTCPStreamStatusError(t *testing.T) {
 	}
 }
 
+func TestECHPoolOpenTCPStreamStatusOK(t *testing.T) {
+	serverSession, clientSession := newProtocolNegotiationSmuxPair(t)
+	oldCfg := cfg
+	oldIPStrategy := ipStrategy
+	t.Cleanup(func() {
+		cfg = oldCfg
+		ipStrategy = oldIPStrategy
+	})
+	cfg.DialTimeout = time.Second
+	ipStrategy = IPStrategyPv6Pv4
+
+	pool := &ECHPool{
+		smuxConns:   []*smux.Session{clientSession},
+		channelRTT:  []int64{int64(5 * time.Millisecond)},
+		channelCaps: []uint32{protocolCapabilityTCPStatus},
+	}
+	serverDone := make(chan error, 1)
+	go func() {
+		stream, err := serverSession.AcceptStream()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer stream.Close()
+		if err := stream.SetDeadline(time.Now().Add(time.Second)); err != nil {
+			serverDone <- err
+			return
+		}
+		kind, strategy, target, err := readSmuxOpenHeader(stream)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if kind != streamKindTCP || strategy != IPStrategyPv6Pv4 || target != "ok.example:443" {
+			serverDone <- fmt.Errorf("tcp open header = kind %d strategy %d target %q", kind, strategy, target)
+			return
+		}
+		serverDone <- writeTCPOpenStatus(stream, tcpOpenStatusOK, "")
+	}()
+
+	stream, chID, decision, err := pool.openTCPStream("ok.example:443")
+	if err != nil {
+		t.Fatalf("openTCPStream returned error: %v", err)
+	}
+	_ = stream.Close()
+	if chID != 1 || decision != 1 {
+		t.Fatalf("openTCPStream chID=%d decision=%d, want 1/1", chID, decision)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("server TCP OK handler: %v", err)
+	}
+}
+
 func TestECHPoolOpenBestStreamNoUsableSessions(t *testing.T) {
 	pool := &ECHPool{}
 	if _, _, _, _, err := pool.openBestStream(); err == nil {

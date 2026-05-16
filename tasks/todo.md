@@ -2094,6 +2094,26 @@ Review:
 - DNS response parsing now rejects query-like messages and non-zero RCODE responses before answer parsing.
 - DNS HTTPS response seeds now set standard response flags, keeping parser tests semantically aligned with real DNS responses.
 
+Post Phase 8 ECHPool TCPStatus OK coverage:
+
+- [x] Cover `openTCPStream` returning a usable stream after a negotiated TCPStatus OK.
+- [x] Verify TCP open header target and IP strategy on the server side.
+- [x] Verify returned channel ID and decision metadata.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'TestECHPoolOpenTCPStreamStatus(OK|Error)|TestECHPoolOpenUDPStreamWritesHeader' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 68.2% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- Client TCP stream opening now has direct coverage for the negotiated TCPStatus OK branch.
+- The test validates the outbound open header and returned channel metadata before closing the stream.
+
 Commit frequency and quality assessment:
 
 - [x] Collect commit cadence, author, and churn metrics from Git history.
