@@ -1542,3 +1542,26 @@ Verification:
 Review:
 
 - Benchmark coverage now includes today's SOCKS5 UDP packet, HTTP header cleanup, and counted full-write paths.
+
+Post Phase 8 HTTP proxy Via header:
+
+- [x] Add local HTTP proxy handling that appends `Via: 1.1 x-tunnel` to forwarded non-CONNECT requests.
+- [x] Preserve existing `Via` values using standard header append semantics.
+- [x] Prove CONNECT tunnel payload bytes remain opaque and do not get proxy-added request headers.
+- [x] Add unit and real integration coverage for the forwarded `Via` behavior.
+- [x] Update protocol documentation, run focused/full/coverage/race verification, and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `rg -n "Via: 1\\.1 x-tunnel|CONNECT tunnel payload" docs/protocol.md integration_test.go x-tunnel.go x_tunnel_test.go`: pass.
+- `go test -run 'Test(AddHTTPProxyViaHeader|StripHTTPProxyHeaders)$' -count=1 ./...`: pass.
+- `go test -run 'TestIntegrationLocalProxyAuth$' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 57.0% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- Ordinary HTTP proxy forwarding now appends `Via: 1.1 x-tunnel` while preserving upstream `Via` values.
+- The authenticated proxy integration proves the origin sees both upstream and x-tunnel `Via` values on ordinary HTTP, while CONNECT-originated request bytes stay free of proxy-added `Via`.

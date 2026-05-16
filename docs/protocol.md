@@ -265,7 +265,7 @@ The local HTTP listener accepts three proxy forms:
 - Absolute-form HTTP requests such as `GET http://host[:port]/path HTTP/1.1`. A missing port defaults to `80`.
 - Origin-form requests such as `GET /path HTTP/1.1` with a valid `Host` header. A missing port defaults to `80`.
 
-Non-CONNECT absolute-form requests are accepted only with the `http` scheme. Absolute-form `https://`, `ftp://`, URL userinfo, malformed authorities, and mismatched `Host` versus URL authorities are rejected with `400 Bad Request` before any smux stream opens. `Proxy-Authorization` is consumed locally before forwarding ordinary HTTP requests. Hop-by-hop request headers are stripped before forwarding, including fields named by `Connection` plus common proxy/connection-only fields such as `Proxy-Connection`, `Keep-Alive`, `TE`, `Trailer`, `Transfer-Encoding`, and `Upgrade`.
+Non-CONNECT absolute-form requests are accepted only with the `http` scheme. Absolute-form `https://`, `ftp://`, URL userinfo, malformed authorities, and mismatched `Host` versus URL authorities are rejected with `400 Bad Request` before any smux stream opens. `Proxy-Authorization` is consumed locally before forwarding ordinary HTTP requests. Hop-by-hop request headers are stripped before forwarding, including fields named by `Connection` plus common proxy/connection-only fields such as `Proxy-Connection`, `Keep-Alive`, `TE`, `Trailer`, `Transfer-Encoding`, and `Upgrade`. Forwarded non-CONNECT requests append `Via: 1.1 x-tunnel`, preserving any existing `Via` values. CONNECT tunnel payload bytes remain opaque and do not receive proxy-added request headers.
 
 ## 11. Current Risk Map
 

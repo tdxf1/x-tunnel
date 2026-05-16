@@ -211,6 +211,7 @@ func TestIntegrationLocalProxyAuth(t *testing.T) {
 	rawHeaders := rawHTTPProxyGETWithAuth(t, httpProxyAddr, "http://"+targetAddr+"/headers", "user", "pass", originHeaders, map[string]string{
 		"Proxy-Connection": "keep-alive",
 		"Connection":       "X-Hop",
+		"Via":              "1.0 upstream-proxy",
 		"X-Hop":            "drop-me",
 		"X-End-To-End":     "keep-me",
 	})
@@ -219,7 +220,10 @@ func TestIntegrationLocalProxyAuth(t *testing.T) {
 	assertHeaderAbsent(t, rawHeaders, "Connection")
 	assertHeaderAbsent(t, rawHeaders, "X-Hop")
 	assertHeaderValue(t, rawHeaders, "X-End-To-End", "keep-me")
+	assertHeaderContainsValue(t, rawHeaders, "Via", "1.0 upstream-proxy")
+	assertHeaderContainsValue(t, rawHeaders, "Via", httpProxyViaValue)
 	assertBody(t, "http connect auth", fetchViaHTTPConnectWithAuth(t, httpProxyAddr, targetAddr, "/payload", "user", "pass"), body)
+	assertOriginHeaderAbsent(t, originHeaders, "Via")
 
 	if got := socks5SelectedMethod(t, socksAddr, []byte{0x00}); got != 0xff {
 		t.Fatalf("SOCKS5 selected method without username/password support = 0x%02x, want 0xff", got)
@@ -956,6 +960,18 @@ func assertHeaderValue(t *testing.T, headers http.Header, name, want string) {
 	if got := headers.Get(name); got != want {
 		t.Fatalf("origin header %s = %q, want %q", name, got, want)
 	}
+}
+
+func assertHeaderContainsValue(t *testing.T, headers http.Header, name, want string) {
+	t.Helper()
+	for _, field := range headers.Values(name) {
+		for _, part := range strings.Split(field, ",") {
+			if strings.TrimSpace(part) == want {
+				return
+			}
+		}
+	}
+	t.Fatalf("origin header %s values = %q, want value %q", name, headers.Values(name), want)
 }
 
 func parseHTTPStatusCode(t *testing.T, statusLine string) int {

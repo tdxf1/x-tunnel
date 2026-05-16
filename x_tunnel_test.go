@@ -2518,6 +2518,21 @@ func TestStripHTTPProxyHeaders(t *testing.T) {
 	}
 }
 
+func TestAddHTTPProxyViaHeader(t *testing.T) {
+	h := http.Header{}
+	addHTTPProxyViaHeader(h)
+	if got := h.Values("Via"); len(got) != 1 || got[0] != httpProxyViaValue {
+		t.Fatalf("Via headers = %q, want [%q]", got, httpProxyViaValue)
+	}
+
+	h.Set("Via", "1.0 upstream-proxy")
+	addHTTPProxyViaHeader(h)
+	got := h.Values("Via")
+	if len(got) != 2 || got[0] != "1.0 upstream-proxy" || got[1] != httpProxyViaValue {
+		t.Fatalf("Via headers = %q, want existing value plus %q", got, httpProxyViaValue)
+	}
+}
+
 func TestHandleHTTPConnectForwardsBufferedClientBytes(t *testing.T) {
 	oldPool := echPool
 	oldCfg := cfg

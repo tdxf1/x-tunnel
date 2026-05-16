@@ -4091,6 +4091,7 @@ func handleHTTP(c net.Conn, cfgp *ProxyConfig) {
 	var first []byte
 
 	if req.Method != "CONNECT" {
+		addHTTPProxyViaHeader(req.Header)
 		req.RequestURI = ""
 		req.URL.Scheme = ""
 		req.URL.Host = ""
@@ -4142,6 +4143,8 @@ var httpHopByHopHeaders = []string{
 	"Upgrade",
 }
 
+const httpProxyViaValue = "1.1 x-tunnel"
+
 func stripHTTPProxyHeaders(h http.Header) {
 	for _, connection := range h.Values("Connection") {
 		for _, token := range strings.Split(connection, ",") {
@@ -4153,6 +4156,10 @@ func stripHTTPProxyHeaders(h http.Header) {
 	for _, name := range httpHopByHopHeaders {
 		h.Del(name)
 	}
+}
+
+func addHTTPProxyViaHeader(h http.Header) {
+	h.Add("Via", httpProxyViaValue)
 }
 
 func forwardBufferedHTTPBytes(br *bufio.Reader, stream io.Writer) error {
