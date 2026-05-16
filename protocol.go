@@ -38,11 +38,17 @@ const (
 	protocolCapabilityPing
 	protocolCapabilityIPStrategy
 	protocolCapabilityTCPStatus
+	protocolCapabilityUDPStatus
 )
 
 const (
 	tcpOpenStatusOK byte = iota
 	tcpOpenStatusError
+)
+
+const (
+	udpOpenStatusOK byte = iota
+	udpOpenStatusError
 )
 
 const protocolHelloMagic = "XTUN"
@@ -61,7 +67,12 @@ func currentProtocolCapabilities() uint32 {
 		protocolCapabilityUDP |
 		protocolCapabilityPing |
 		protocolCapabilityIPStrategy |
-		protocolCapabilityTCPStatus
+		protocolCapabilityTCPStatus |
+		protocolCapabilityUDPStatus
+}
+
+func requiredProtocolCapabilities() uint32 {
+	return protocolCapabilityTCP | protocolCapabilityPing
 }
 
 func currentProtocolHello() ProtocolHello {
@@ -118,7 +129,7 @@ func negotiateProtocolHello(clientHello ProtocolHello) ProtocolHello {
 		}
 	}
 	caps := clientHello.Capabilities & currentProtocolCapabilities()
-	required := protocolCapabilityTCP | protocolCapabilityPing
+	required := requiredProtocolCapabilities()
 	if caps&required != required {
 		return ProtocolHello{
 			Version: protocolVersion,
@@ -134,8 +145,24 @@ func negotiateProtocolHello(clientHello ProtocolHello) ProtocolHello {
 }
 
 func writeTCPOpenStatus(w io.Writer, status byte, message string) error {
-	if err := validateProtocolFieldLen("TCP 打开状态消息", len(message)); err != nil {
-		return fmt.Errorf("TCP 打开状态消息过长")
+	return writeOpenStatus(w, "TCP 打开状态消息", status, message)
+}
+
+func readTCPOpenStatus(r io.Reader) (byte, string, error) {
+	return readOpenStatus(r)
+}
+
+func writeUDPOpenStatus(w io.Writer, status byte, message string) error {
+	return writeOpenStatus(w, "UDP 打开状态消息", status, message)
+}
+
+func readUDPOpenStatus(r io.Reader) (byte, string, error) {
+	return readOpenStatus(r)
+}
+
+func writeOpenStatus(w io.Writer, fieldName string, status byte, message string) error {
+	if err := validateProtocolFieldLen(fieldName, len(message)); err != nil {
+		return err
 	}
 	head := make([]byte, 3)
 	head[0] = status
@@ -146,7 +173,7 @@ func writeTCPOpenStatus(w io.Writer, status byte, message string) error {
 	return writeOptionalPayload(w, []byte(message))
 }
 
-func readTCPOpenStatus(r io.Reader) (byte, string, error) {
+func readOpenStatus(r io.Reader) (byte, string, error) {
 	head := make([]byte, 3)
 	if _, err := io.ReadFull(r, head); err != nil {
 		return 0, "", err

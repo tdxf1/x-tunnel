@@ -3020,19 +3020,29 @@ func handleSmuxStream(session *ClientSession, ch *WSChannel, stream *smux.Stream
 		log.Printf("[服务端] 客户ID:%s TCP 关闭: %s, 通道:%d", shortID(session.clientID), target, ch.id)
 	case streamKindUDP:
 		log.Printf("[服务端] 客户ID:%s SOCKS5 UDP 访问: %s, 通道:%d", shortID(session.clientID), target, ch.id)
+		sendOpenStatus := atomic.LoadUint32(&ch.capabilities)&protocolCapabilityUDPStatus != 0
 		if err := validateIPStrategyValue(strategy); err != nil {
 			atomic.AddUint64(&serverTargetRejectSeq, 1)
 			log.Printf("[服务端] 客户ID:%s UDP 拒绝: %s, reason=%v, 通道:%d", shortID(session.clientID), target, err, ch.id)
+			if sendOpenStatus {
+				_ = writeUDPOpenStatus(stream, udpOpenStatusError, err.Error())
+			}
 			return
 		}
 		if err := validateSmuxStreamTarget(target); err != nil {
 			atomic.AddUint64(&serverTargetRejectSeq, 1)
 			log.Printf("[服务端] 客户ID:%s UDP 拒绝: %s, reason=%v, 通道:%d", shortID(session.clientID), target, err, ch.id)
+			if sendOpenStatus {
+				_ = writeUDPOpenStatus(stream, udpOpenStatusError, err.Error())
+			}
 			return
 		}
 		if err := ensureTargetAllowed(target); err != nil {
 			atomic.AddUint64(&serverTargetRejectSeq, 1)
 			log.Printf("[服务端] 客户ID:%s UDP 拒绝: %s, reason=%v, 通道:%d", shortID(session.clientID), target, err, ch.id)
+			if sendOpenStatus {
+				_ = writeUDPOpenStatus(stream, udpOpenStatusError, err.Error())
+			}
 			return
 		}
 		var relay UDPRelayer
@@ -3041,6 +3051,9 @@ func handleSmuxStream(session *ClientSession, ch *WSChannel, stream *smux.Stream
 			socksRelay, err = newSOCKS5UDPRelay(target)
 			if err != nil {
 				log.Printf("[服务端] 客户ID:%s SOCKS5 UDP中继创建失败: %v, 通道:%d", shortID(session.clientID), err, ch.id)
+				if sendOpenStatus {
+					_ = writeUDPOpenStatus(stream, udpOpenStatusError, err.Error())
+				}
 				return
 			}
 			relay = socksRelay
@@ -3048,11 +3061,17 @@ func handleSmuxStream(session *ClientSession, ch *WSChannel, stream *smux.Stream
 			addr, errResolve := resolveUDPWithStrategy(target, strategy)
 			if errResolve != nil {
 				log.Printf("[服务端] 客户ID:%s UDP 解析失败: %s, err=%v, 通道:%d", shortID(session.clientID), target, errResolve, ch.id)
+				if sendOpenStatus {
+					_ = writeUDPOpenStatus(stream, udpOpenStatusError, errResolve.Error())
+				}
 				return
 			}
 			udpConn, errListen := net.ListenUDP("udp", nil)
 			if errListen != nil {
 				log.Printf("[服务端] 客户ID:%s UDP 监听失败: %s, err=%v, 通道:%d", shortID(session.clientID), target, errListen, ch.id)
+				if sendOpenStatus {
+					_ = writeUDPOpenStatus(stream, udpOpenStatusError, errListen.Error())
+				}
 				return
 			}
 			relay = &DirectUDPRelayer{conn: udpConn, target: addr}
@@ -3061,6 +3080,11 @@ func handleSmuxStream(session *ClientSession, ch *WSChannel, stream *smux.Stream
 			return
 		}
 		defer relay.Close()
+		if sendOpenStatus {
+			if err := writeUDPOpenStatus(stream, udpOpenStatusOK, ""); err != nil {
+				return
+			}
+		}
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
@@ -3333,7 +3357,7 @@ func negotiateClientProtocol(sess *smux.Session, timeout time.Duration) (uint32,
 	if response.Version != protocolVersion {
 		return 0, false, fmt.Errorf("协议版本不匹配: %d", response.Version)
 	}
-	required := protocolCapabilityTCP | protocolCapabilityPing
+	required := requiredProtocolCapabilities()
 	if response.Capabilities&required != required {
 		return 0, false, fmt.Errorf("协议能力不足: caps=0x%x", response.Capabilities)
 	}
@@ -3471,13 +3495,29 @@ func (p *ECHPool) openTCPStream(target string) (*smux.Stream, int, int, error) {
 }
 
 func (p *ECHPool) openUDPStream(target string) (*smux.Stream, int, int, error) {
-	s, chID, decision, _, err := p.openBestStream()
+	s, chID, decision, caps, err := p.openBestStream()
 	if err != nil {
 		return nil, 0, 0, err
 	}
 	if err := writeSmuxOpenHeader(s, streamKindUDP, ipStrategy, target); err != nil {
 		_ = s.Close()
 		return nil, 0, 0, err
+	}
+	if caps&protocolCapabilityUDPStatus != 0 {
+		_ = s.SetDeadline(time.Now().Add(cfg.DialTimeout))
+		status, message, err := readUDPOpenStatus(s)
+		_ = s.SetDeadline(time.Time{})
+		if err != nil {
+			_ = s.Close()
+			return nil, 0, 0, err
+		}
+		if status != udpOpenStatusOK {
+			_ = s.Close()
+			if message == "" {
+				message = fmt.Sprintf("status=%d", status)
+			}
+			return nil, 0, 0, fmt.Errorf("远端 UDP 打开失败: %s", message)
+		}
 	}
 	return s, chID, decision, nil
 }

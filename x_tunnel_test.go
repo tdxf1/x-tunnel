@@ -2216,6 +2216,50 @@ func TestHandleWebSocketChannelReturnsTCPStatusWhenStreamLimitReached(t *testing
 	}
 }
 
+func TestHandleSmuxStreamReturnsUDPStatusOnRejectedOpen(t *testing.T) {
+	serverSession, clientSession := newProtocolNegotiationSmuxPair(t)
+	session := &ClientSession{
+		clientID:      "udp-status-reject-test",
+		channels:      make(map[uint64]*WSChannel),
+		activeStreams: 1,
+	}
+	ch := &WSChannel{id: 1, session: session, capabilities: protocolCapabilityUDPStatus}
+
+	serverDone := make(chan error, 1)
+	go func() {
+		stream, err := serverSession.AcceptStream()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		handleSmuxStream(session, ch, stream)
+		serverDone <- nil
+	}()
+
+	stream, err := clientSession.OpenStream()
+	if err != nil {
+		t.Fatalf("open smux stream: %v", err)
+	}
+	_ = stream.SetDeadline(time.Now().Add(time.Second))
+	if err := writeSmuxOpenHeader(stream, streamKindUDP, 0xff, "127.0.0.1:53"); err != nil {
+		t.Fatalf("write UDP open header: %v", err)
+	}
+	status, message, err := readUDPOpenStatus(stream)
+	if err != nil {
+		t.Fatalf("read UDP open status: %v", err)
+	}
+	if status != udpOpenStatusError || !strings.Contains(message, "IP 策略无效") {
+		t.Fatalf("UDP open status = %d %q, want IP strategy error", status, message)
+	}
+	_ = stream.Close()
+	if err := <-serverDone; err != nil {
+		t.Fatalf("server UDP rejection handler: %v", err)
+	}
+	if got := session.activeStreamCount(); got != 0 {
+		t.Fatalf("active stream count after rejected UDP = %d, want 0", got)
+	}
+}
+
 func TestDialWebSocketWithECHWSMetadata(t *testing.T) {
 	oldCfg := cfg
 	oldToken := token
@@ -4755,6 +4799,12 @@ func TestProtocolConstants(t *testing.T) {
 	if protocolStatusOK != 0 {
 		t.Fatalf("protocolStatusOK = %d, want 0", protocolStatusOK)
 	}
+	if got, want := requiredProtocolCapabilities(), protocolCapabilityTCP|protocolCapabilityPing; got != want {
+		t.Fatalf("requiredProtocolCapabilities = 0x%x, want 0x%x", got, want)
+	}
+	if currentProtocolCapabilities()&requiredProtocolCapabilities() != requiredProtocolCapabilities() {
+		t.Fatalf("currentProtocolCapabilities 0x%x does not include required capabilities 0x%x", currentProtocolCapabilities(), requiredProtocolCapabilities())
+	}
 }
 
 func TestIsSupportedStreamKind(t *testing.T) {
@@ -5482,6 +5532,37 @@ func TestTCPOpenStatusRejectsOversizedMessage(t *testing.T) {
 	}
 }
 
+func TestUDPOpenStatusRoundTrip(t *testing.T) {
+	var buf bytes.Buffer
+	if err := writeUDPOpenStatus(&buf, udpOpenStatusError, "policy denied"); err != nil {
+		t.Fatalf("writeUDPOpenStatus returned error: %v", err)
+	}
+	status, message, err := readUDPOpenStatus(&buf)
+	if err != nil {
+		t.Fatalf("readUDPOpenStatus returned error: %v", err)
+	}
+	if status != udpOpenStatusError || message != "policy denied" {
+		t.Fatalf("readUDPOpenStatus = status %d message %q", status, message)
+	}
+}
+
+func TestUDPOpenStatusWireBytes(t *testing.T) {
+	var buf bytes.Buffer
+	if err := writeUDPOpenStatus(&buf, udpOpenStatusError, "bad"); err != nil {
+		t.Fatalf("writeUDPOpenStatus returned error: %v", err)
+	}
+	want := []byte{0x01, 0x00, 0x03, 'b', 'a', 'd'}
+	if !bytes.Equal(buf.Bytes(), want) {
+		t.Fatalf("UDP open status bytes = %x, want %x", buf.Bytes(), want)
+	}
+}
+
+func TestUDPOpenStatusRejectsOversizedMessage(t *testing.T) {
+	if err := writeUDPOpenStatus(io.Discard, udpOpenStatusError, strings.Repeat("x", 65536)); err == nil {
+		t.Fatal("writeUDPOpenStatus accepted oversized message")
+	}
+}
+
 func TestReadTCPOpenStatusMalformed(t *testing.T) {
 	if _, _, err := readTCPOpenStatus(bytes.NewReader([]byte{tcpOpenStatusOK})); err == nil {
 		t.Fatal("readTCPOpenStatus accepted short frame")
@@ -5489,6 +5570,16 @@ func TestReadTCPOpenStatusMalformed(t *testing.T) {
 	raw := []byte{tcpOpenStatusError, 0, 5, 'x'}
 	if _, _, err := readTCPOpenStatus(bytes.NewReader(raw)); err == nil {
 		t.Fatal("readTCPOpenStatus accepted truncated message")
+	}
+}
+
+func TestReadUDPOpenStatusMalformed(t *testing.T) {
+	if _, _, err := readUDPOpenStatus(bytes.NewReader([]byte{udpOpenStatusOK})); err == nil {
+		t.Fatal("readUDPOpenStatus accepted short frame")
+	}
+	raw := []byte{udpOpenStatusError, 0, 5, 'x'}
+	if _, _, err := readUDPOpenStatus(bytes.NewReader(raw)); err == nil {
+		t.Fatal("readUDPOpenStatus accepted truncated message")
 	}
 }
 
@@ -5888,6 +5979,10 @@ func TestECHPoolOpenUDPStreamWritesHeader(t *testing.T) {
 			serverDone <- fmt.Errorf("udp open header = kind %d strategy %d target %q", kind, strategy, target)
 			return
 		}
+		if err := writeUDPOpenStatus(stream, udpOpenStatusOK, ""); err != nil {
+			serverDone <- err
+			return
+		}
 		serverDone <- nil
 	}()
 
@@ -5901,6 +5996,49 @@ func TestECHPoolOpenUDPStreamWritesHeader(t *testing.T) {
 	}
 	if err := <-serverDone; err != nil {
 		t.Fatalf("server read UDP open header: %v", err)
+	}
+}
+
+func TestECHPoolOpenUDPStreamStatusError(t *testing.T) {
+	serverSession, clientSession := newProtocolNegotiationSmuxPair(t)
+	oldCfg := cfg
+	oldIPStrategy := ipStrategy
+	t.Cleanup(func() {
+		cfg = oldCfg
+		ipStrategy = oldIPStrategy
+	})
+	cfg.DialTimeout = time.Second
+	ipStrategy = IPStrategyDefault
+
+	pool := &ECHPool{
+		smuxConns:   []*smux.Session{clientSession},
+		channelRTT:  []int64{int64(5 * time.Millisecond)},
+		channelCaps: []uint32{protocolCapabilityUDPStatus},
+	}
+	serverDone := make(chan error, 1)
+	go func() {
+		stream, err := serverSession.AcceptStream()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer stream.Close()
+		if _, _, _, err := readSmuxOpenHeader(stream); err != nil {
+			serverDone <- err
+			return
+		}
+		serverDone <- writeUDPOpenStatus(stream, udpOpenStatusError, "policy denied")
+	}()
+
+	stream, _, _, err := pool.openUDPStream("example.com:53")
+	if stream != nil {
+		_ = stream.Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), "远端 UDP 打开失败: policy denied") {
+		t.Fatalf("openUDPStream error = %v, want remote UDP failure", err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("server UDP status handler: %v", err)
 	}
 }
 
@@ -7292,6 +7430,10 @@ func TestUDPAssociationLoopSendsParsedPacketOverSmux(t *testing.T) {
 		}
 		if kind != streamKindUDP || strategy != IPStrategyDefault || target != "8.8.8.8:53" {
 			serverDone <- fmt.Errorf("UDP association header = kind %d strategy %d target %q", kind, strategy, target)
+			return
+		}
+		if err := writeUDPOpenStatus(stream, udpOpenStatusOK, ""); err != nil {
+			serverDone <- err
 			return
 		}
 		chunk, err := readChunk(stream)

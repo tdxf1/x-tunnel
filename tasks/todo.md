@@ -2670,3 +2670,43 @@ Review:
 
 - Startup ECH preparation now observes the process context before each attempt and while waiting between retries.
 - Runtime `refreshECH` still uses the existing background behavior, preserving current retry semantics for reconnect-time ECH refreshes.
+
+Post Phase 8 UDP open status protocol:
+
+- [x] Add negotiated `UDPStatus` capability without changing legacy UDP datagram framing.
+- [x] Return UDP open status OK/error from the server when both peers support the capability.
+- [x] Make `openUDPStream` consume UDP open status and surface server-side errors.
+- [x] Cover client status OK/error and server UDP rejection status.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `go test -run 'Test(UDP|ReadUDP|ECHPoolOpenUDPStream|HandleSmuxStreamReturnsUDPStatus|ProtocolHello|NegotiateClientProtocol)' -count=1 ./...`: pass.
+- `git diff --check`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 75.2% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- UDP streams now have an optional negotiated open-status frame that mirrors TCPStatus and leaves legacy UDP chunk framing unchanged.
+- Server-side UDP target validation, policy rejection, relay setup failure, and success paths can now report explicit UDP open status to modern clients.
+- Protocol documentation now lists the UDPStatus capability and the UDP open-status frame.
+
+Post Phase 8 protocol required capabilities helper:
+
+- [x] Extract the required protocol capability mask shared by server and client negotiation.
+- [x] Cover the helper in protocol constants so required capabilities stay pinned to TCP and Ping.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- Covered by the UDPStatus focused command above, which includes `TestProtocolHello` and `TestNegotiateClientProtocol`.
+- `git diff --check`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 75.2% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- Server and client negotiation now share `requiredProtocolCapabilities()`, keeping the required mask pinned to TCP and Ping while optional capabilities can grow independently.

@@ -2,7 +2,7 @@
 
 Status: current implementation snapshot.
 
-This document describes the wire behavior implemented in `x-tunnel.go` before any protocol evolution. It is intentionally conservative: any future change to these bytes must either remain backward-compatible or introduce explicit version/capability negotiation.
+This document describes the wire behavior implemented in `x-tunnel.go`. It is intentionally conservative: any future change to these bytes must either remain backward-compatible or introduce explicit version/capability negotiation.
 
 Standards references used for local proxy behavior:
 
@@ -156,11 +156,12 @@ Capability flags:
 | `1 << 2` | Ping | Ping streams are supported. |
 | `1 << 3` | IPStrategy | IP strategy byte is understood. |
 | `1 << 4` | TCPStatus | TCP streams begin with an open-status frame before proxied bytes. |
+| `1 << 5` | UDPStatus | UDP streams begin with an open-status frame before UDP chunks. |
 
 Current client behavior:
 
 - Requires negotiated TCP and Ping capabilities.
-- Advertises UDP, IPStrategy, and TCPStatus support. TCPStatus changes the TCP stream handshake when both peers negotiate it; UDP and IPStrategy are currently declared capabilities for compatibility visibility rather than per-stream gates.
+- Advertises UDP, IPStrategy, TCPStatus, and UDPStatus support. TCPStatus and UDPStatus add per-stream open-status frames only when both peers negotiate them; legacy channels keep the previous close-only behavior.
 - Treats EOF, unexpected EOF, or timeout while waiting for hello as legacy server behavior.
 - Fails the channel cleanly on explicit rejection or insufficient capabilities.
 
@@ -205,7 +206,24 @@ The server echoes the exact 8-byte payload. The client measures RTT around write
 
 ## 8. UDP Stream
 
-A UDP stream is opened for one current target. The local SOCKS5 UDP association binds to the first requested `DST.ADDR:DST.PORT`; later packets for a different target are dropped instead of being sent over the already-bound stream. Client-to-server datagrams are sent as chunks:
+A UDP stream is opened for one current target. The local SOCKS5 UDP association binds to the first requested `DST.ADDR:DST.PORT`; later packets for a different target are dropped instead of being sent over the already-bound stream.
+
+When both peers negotiate `UDPStatus`, the server first writes a UDP open-status frame using the same status-frame shape as TCPStatus:
+
+```text
+----------------+------------------+----------------------+
+| status (u8)   | msg_len (BE16)   | message bytes ...    |
++----------------+------------------+----------------------+
+```
+
+Status values:
+
+| Value | Name | Meaning |
+| --- | --- | --- |
+| `0` | OK | Target policy and UDP relay setup succeeded. UDP chunks follow. |
+| `1` | Error | Target policy, target parsing, or UDP relay setup failed. The message is diagnostic text and the stream closes. |
+
+Legacy channels do not wait for a status frame and keep the older best-effort behavior. After any negotiated OK status, client-to-server datagrams are sent as chunks:
 
 ```text
 0                   1
