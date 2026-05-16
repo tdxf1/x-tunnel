@@ -1154,3 +1154,18 @@ Verification:
 - `go test -count=1 ./...`: pass.
 - `go test -cover -count=1 ./...`: pass, `coverage: 47.8% of statements`.
 - `go test -race -count=1 ./...`: pass.
+
+Post Phase 8 smux open header deadline:
+
+- [x] Apply `RTTProbeTimeout` while the server reads smux open headers and target bytes.
+- [x] Preserve normal stream behavior by clearing the deadline after a complete header.
+- [x] Add focused tests for half-open headers and truncated target bytes.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'TestHandleSmuxStream(OpenHeaderDeadline|TruncatedOpenHeaderTargetDeadline|PingDeadline|HelloDeadline|RejectsInvalid.*IPStrategy)' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 47.9% of statements`.
+- `go test -race -count=1 ./...`: pass.

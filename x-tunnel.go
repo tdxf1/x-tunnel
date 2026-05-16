@@ -2725,10 +2725,12 @@ func handleSmuxStream(session *ClientSession, ch *WSChannel, stream *smux.Stream
 		stream.Close()
 	}()
 	streamID := atomic.AddUint64(&serverStreamSeq, 1)
+	_ = stream.SetDeadline(time.Now().Add(cfg.RTTProbeTimeout))
 	kind, strategy, target, err := readSmuxOpenHeader(stream)
 	if err != nil {
 		return
 	}
+	_ = stream.SetDeadline(time.Time{})
 	log.Printf("[服务端] stream=%d client=%s channel=%d kind=%d target=%s", streamID, shortID(session.clientID), ch.id, kind, target)
 	if !isSupportedStreamKind(kind) {
 		atomic.AddUint64(&serverUnsupportedStreamSeq, 1)

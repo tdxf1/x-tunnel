@@ -2109,6 +2109,19 @@ func openAcceptedSmuxTestStream(t *testing.T, kind byte) (*smux.Stream, *smux.St
 func openAcceptedSmuxTestStreamWithHeader(t *testing.T, kind, strategy byte, target string) (*smux.Stream, *smux.Stream) {
 	t.Helper()
 
+	clientStream, serverStream := openRawAcceptedSmuxTestStream(t)
+	if err := clientStream.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set client stream deadline: %v", err)
+	}
+	if err := writeSmuxOpenHeader(clientStream, kind, strategy, target); err != nil {
+		t.Fatalf("write smux open header: %v", err)
+	}
+	return clientStream, serverStream
+}
+
+func openRawAcceptedSmuxTestStream(t *testing.T) (*smux.Stream, *smux.Stream) {
+	t.Helper()
+
 	serverConn, clientConn := net.Pipe()
 	serverSession, err := smux.Server(serverConn, nil)
 	if err != nil {
@@ -2144,12 +2157,6 @@ func openAcceptedSmuxTestStreamWithHeader(t *testing.T, kind, strategy byte, tar
 	t.Cleanup(func() {
 		clientStream.Close()
 	})
-	if err := clientStream.SetDeadline(time.Now().Add(time.Second)); err != nil {
-		t.Fatalf("set client stream deadline: %v", err)
-	}
-	if err := writeSmuxOpenHeader(clientStream, kind, strategy, target); err != nil {
-		t.Fatalf("write smux open header: %v", err)
-	}
 
 	select {
 	case serverStream := <-accepted:
@@ -2216,6 +2223,58 @@ func TestHandleSmuxStreamPingDeadline(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for half-open ping stream handler")
+	}
+}
+
+func TestHandleSmuxStreamOpenHeaderDeadline(t *testing.T) {
+	oldCfg := cfg
+	defer func() {
+		cfg = oldCfg
+	}()
+	cfg.RTTProbeTimeout = 50 * time.Millisecond
+
+	_, serverStream := openRawAcceptedSmuxTestStream(t)
+	done := make(chan struct{})
+	session := &ClientSession{clientID: "open-header-deadline-test", channels: make(map[uint64]*WSChannel)}
+	go func() {
+		defer close(done)
+		handleSmuxStream(session, &WSChannel{id: 1, session: session}, serverStream)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for half-open smux header handler")
+	}
+}
+
+func TestHandleSmuxStreamTruncatedOpenHeaderTargetDeadline(t *testing.T) {
+	oldCfg := cfg
+	defer func() {
+		cfg = oldCfg
+	}()
+	cfg.RTTProbeTimeout = 50 * time.Millisecond
+
+	clientStream, serverStream := openRawAcceptedSmuxTestStream(t)
+	if err := clientStream.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set client stream deadline: %v", err)
+	}
+	raw := []byte{streamKindTCP, IPStrategyDefault, 0, 5, 'a'}
+	if err := writeAll(clientStream, raw); err != nil {
+		t.Fatalf("write truncated smux open header target: %v", err)
+	}
+
+	done := make(chan struct{})
+	session := &ClientSession{clientID: "truncated-open-header-target-test", channels: make(map[uint64]*WSChannel)}
+	go func() {
+		defer close(done)
+		handleSmuxStream(session, &WSChannel{id: 1, session: session}, serverStream)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for truncated smux header target handler")
 	}
 }
 
