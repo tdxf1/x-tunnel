@@ -10,6 +10,14 @@ targets="${TARGETS:-linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/am
 mkdir -p "${dist}"
 : >"${dist}/SHA256SUMS"
 
+checksum() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1"
+  else
+    shasum -a 256 "$1"
+  fi
+}
+
 for target in ${targets}; do
   goos="${target%/*}"
   goarch="${target#*/}"
@@ -19,11 +27,12 @@ for target in ${targets}; do
   fi
   out="${dist}/x-tunnel_${version}_${goos}_${goarch}${ext}"
   printf 'building %s/%s -> %s\n' "${goos}" "${goarch}" "${out}"
-  GOOS="${goos}" GOARCH="${goarch}" go build \
+  CGO_ENABLED="${CGO_ENABLED:-0}" GOOS="${goos}" GOARCH="${goarch}" go build \
+    -trimpath \
     -ldflags "-s -w -X main.buildVersion=${version} -X main.buildCommit=${commit} -X main.buildDate=${build_date}" \
     -o "${out}" \
-    .
-  (cd "${dist}" && shasum -a 256 "$(basename "${out}")" >>SHA256SUMS)
+    ./cmd/x-tunnel
+  (cd "${dist}" && checksum "$(basename "${out}")" >>SHA256SUMS)
 done
 
 printf 'release artifacts written to %s\n' "${dist}"

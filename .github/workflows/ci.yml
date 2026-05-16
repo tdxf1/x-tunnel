@@ -4,22 +4,32 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.24.4"
           cache: true
 
       - name: Download modules
         run: go mod download
+
+      - name: Format check
+        run: |
+          test -z "$(gofmt -l ./cmd ./internal)"
+
+      - name: Vet
+        run: go vet ./...
 
       - name: Test
         run: go test -count=1 -timeout=2m ./...
@@ -37,7 +47,7 @@ jobs:
         run: go test -run '^$' -fuzz FuzzParseSOCKS5UDPPacket -fuzztime=2s -parallel=1 ./...
 
       - name: Build
-        run: go build -o x-tunnel .
+        run: go build -o x-tunnel ./cmd/x-tunnel
 
       - name: Build script smoke
         run: |

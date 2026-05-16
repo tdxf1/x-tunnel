@@ -1,0 +1,6 @@
+/dist/
+/x-tunnel
+/coverage.out
+*.test
+*.log
+.DS_Store
