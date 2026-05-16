@@ -2197,3 +2197,23 @@ Review:
 
 - The shutdown helper is now covered by a real HTTP server that serves a request and then closes through context cancellation.
 - The race run exposed a background read of global config; passing the shutdown timeout into the goroutine removes that latent data race.
+
+Post Phase 8 WebSocket channel hello lifecycle:
+
+- [x] Cover `handleWebSocketChannel` with a real `httptest` WebSocket and smux client.
+- [x] Verify protocol hello negotiation stores channel capabilities.
+- [x] Verify channel/session cleanup after the client closes.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'TestHandleWebSocketChannelNegotiatesHelloAndCleansUp' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 70.4% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- `handleWebSocketChannel` now has real WebSocket and smux coverage for protocol hello negotiation.
+- The test verifies channel capability storage and that closing the client removes the channel and session.

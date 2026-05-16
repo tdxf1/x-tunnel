@@ -1749,6 +1749,96 @@ func newTestWSNetConnPair(t *testing.T) (*wsNetConn, *wsNetConn) {
 	return client, serverConn
 }
 
+func TestHandleWebSocketChannelNegotiatesHelloAndCleansUp(t *testing.T) {
+	oldCfg := cfg
+	t.Cleanup(func() { cfg = oldCfg })
+	cfg.RTTProbeTimeout = time.Second
+
+	const clientID = "channel-hello-test"
+	serverSessions.Delete(clientID)
+	t.Cleanup(func() { serverSessions.Delete(clientID) })
+
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	ready := make(chan *WSChannel, 1)
+	done := make(chan struct{})
+	serverErr := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wsConn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		session := &ClientSession{
+			clientID: clientID,
+			channels: make(map[uint64]*WSChannel),
+		}
+		serverSessions.Store(clientID, session)
+		ch := session.addChannel(wsConn, 7)
+		ready <- ch
+		go func() {
+			handleWebSocketChannel(ch)
+			close(done)
+		}()
+	}))
+	t.Cleanup(server.Close)
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	clientWS, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial test websocket: %v", err)
+	}
+	clientConn := newWSNetConn(clientWS)
+
+	var ch *WSChannel
+	select {
+	case ch = <-ready:
+	case err := <-serverErr:
+		_ = clientConn.Close()
+		t.Fatalf("upgrade websocket: %v", err)
+	case <-time.After(time.Second):
+		_ = clientConn.Close()
+		t.Fatal("timed out waiting for websocket channel")
+	}
+
+	clientSession, err := smux.Client(clientConn, nil)
+	if err != nil {
+		_ = clientConn.Close()
+		t.Fatalf("create smux client: %v", err)
+	}
+	caps, legacy, err := negotiateClientProtocol(clientSession, time.Second)
+	if err != nil {
+		_ = clientSession.Close()
+		_ = clientConn.Close()
+		t.Fatalf("negotiate protocol over websocket channel: %v", err)
+	}
+	if legacy {
+		t.Fatal("negotiateClientProtocol reported legacy mode")
+	}
+	if caps != currentProtocolCapabilities() {
+		t.Fatalf("negotiated caps = 0x%x, want 0x%x", caps, currentProtocolCapabilities())
+	}
+	if got := atomic.LoadUint32(&ch.capabilities); got != currentProtocolCapabilities() {
+		t.Fatalf("channel capabilities = 0x%x, want 0x%x", got, currentProtocolCapabilities())
+	}
+
+	_ = clientSession.Close()
+	_ = clientConn.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("handleWebSocketChannel did not return after client close")
+	}
+	ch.session.mu.RLock()
+	channelCount := len(ch.session.channels)
+	ch.session.mu.RUnlock()
+	if channelCount != 0 {
+		t.Fatalf("session has %d channels after cleanup, want 0", channelCount)
+	}
+	if _, ok := serverSessions.Load(clientID); ok {
+		t.Fatal("serverSessions still contains closed test session")
+	}
+}
+
 func TestDialWebSocketWithECHWSMetadata(t *testing.T) {
 	oldCfg := cfg
 	oldToken := token
