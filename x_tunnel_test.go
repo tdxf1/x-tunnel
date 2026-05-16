@@ -738,6 +738,28 @@ func TestParseDNSResponseRejectsMalformedBoundaries(t *testing.T) {
 	}
 }
 
+func TestParseHTTPSRecordTargetNameBoundaries(t *testing.T) {
+	ech := []byte("ech")
+	record := []byte{
+		0, 1,
+		3, 's', 'v', 'c',
+		7, 'e', 'x', 'a', 'm', 'p', 'l', 'e',
+		0,
+		0, 5, 0, byte(len(ech)),
+	}
+	record = append(record, ech...)
+	if got, want := parseHTTPSRecord(record), base64.StdEncoding.EncodeToString(ech); got != want {
+		t.Fatalf("parseHTTPSRecord with target name = %q, want %q", got, want)
+	}
+
+	if got := parseHTTPSRecord([]byte{0, 1, 63}); got != "" {
+		t.Fatalf("parseHTTPSRecord accepted truncated target name: %q", got)
+	}
+	if got := parseHTTPSRecord([]byte{0, 1, 0xC0, 0xFF}); got != "" {
+		t.Fatalf("parseHTTPSRecord accepted invalid compression pointer: %q", got)
+	}
+}
+
 func TestQueryDNSUDPReturnsECH(t *testing.T) {
 	oldCfg := cfg
 	defer func() { cfg = oldCfg }()

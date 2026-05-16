@@ -2710,3 +2710,23 @@ Verification:
 Review:
 
 - Server and client negotiation now share `requiredProtocolCapabilities()`, keeping the required mask pinned to TCP and Ping while optional capabilities can grow independently.
+
+Post Phase 8 HTTPS record target-name boundary hardening:
+
+- [x] Reuse the bounded DNS name skipper when parsing HTTPS/SVCB record target names.
+- [x] Cover HTTPS records with non-root target names and malformed/truncated target names.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `go test -run 'Test(ParseHTTPSRecord|ParseDNSResponse|QueryDoH|QueryDNSUDP|QueryHTTPSRecord)' -count=1 ./...`: pass.
+- `go test -run '^$' -fuzz FuzzParseHTTPSRecord -fuzztime=2s ./...`: pass, `execs: 97578`, `new interesting: 25`.
+- `git diff --check`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 75.3% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- HTTPS/SVCB record target names now use the same bounded DNS name parser as DNS question and answer names.
+- The parser keeps returning an empty ECH value for malformed HTTPS RDATA, but no longer advances offsets with unchecked label lengths.

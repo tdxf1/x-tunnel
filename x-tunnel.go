@@ -2297,14 +2297,11 @@ func parseHTTPSRecord(data []byte) string {
 		return ""
 	}
 	offset := 2
-	if offset < len(data) && data[offset] == 0 {
-		offset++
-	} else {
-		for offset < len(data) && data[offset] != 0 {
-			offset += int(data[offset]) + 1
-		}
-		offset++
+	next, err := skipDNSName(data, offset)
+	if err != nil {
+		return ""
 	}
+	offset = next
 	for offset+4 <= len(data) {
 		key := binary.BigEndian.Uint16(data[offset : offset+2])
 		length := binary.BigEndian.Uint16(data[offset+2 : offset+4])
