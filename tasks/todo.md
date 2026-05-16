@@ -1504,7 +1504,7 @@ Review:
 
 Post Phase 8 ClientSession channel lifecycle tests:
 
-- [x] Add a lightweight fake `*websocket.Conn` helper for channel lifecycle tests.
+- [x] Add a lightweight real `*websocket.Conn` helper for channel lifecycle tests.
 - [x] Cover `addChannel` auto IDs, preferred IDs, and replacement closing the old channel.
 - [x] Cover `removeChannel` ignoring stale channel pointers and cleaning `serverSessions` when the last current channel is removed.
 - [x] Run focused/full/coverage/race verification and commit.
