@@ -252,6 +252,7 @@ Current behavior:
 - `RSV` must be `0x0000`.
 - `FRAG` must be `0`.
 - `ATYP` supports IPv4, domain, and IPv6.
+- Domain targets must be valid DNS hostnames before a smux stream is opened.
 - IPv6 targets are formatted as `[host]:port` after parsing.
 - UDP destination ports listed in `-block` are silently dropped.
 
@@ -265,7 +266,7 @@ The local HTTP listener accepts three proxy forms:
 - Absolute-form HTTP requests such as `GET http://host[:port]/path HTTP/1.1`. A missing port defaults to `80`.
 - Origin-form requests such as `GET /path HTTP/1.1` with a valid `Host` header. A missing port defaults to `80`.
 
-Non-CONNECT absolute-form requests are accepted only with the `http` scheme. Absolute-form `https://`, `ftp://`, URL userinfo, malformed authorities, and mismatched `Host` versus URL authorities are rejected with `400 Bad Request` before any smux stream opens. `Proxy-Authorization` is consumed locally before forwarding ordinary HTTP requests, with the Basic auth scheme matched case-insensitively. Hop-by-hop request headers are stripped before forwarding, including fields named by `Connection` plus common proxy/connection-only fields such as `Proxy-Connection`, `Keep-Alive`, `TE`, `Trailer`, `Transfer-Encoding`, and `Upgrade`; close state from `Connection: close` is also cleared. Forwarded non-CONNECT requests append `Via: 1.1 x-tunnel`, preserving any existing `Via` values. CONNECT tunnel payload bytes remain opaque and do not receive proxy-added request headers.
+Non-CONNECT absolute-form requests are accepted only with the `http` scheme. Absolute-form `https://`, `ftp://`, URL userinfo, malformed authorities, invalid DNS hostnames, and mismatched `Host` versus URL authorities are rejected with `400 Bad Request` before any smux stream opens. `Proxy-Authorization` is consumed locally before forwarding ordinary HTTP requests, with the Basic auth scheme matched case-insensitively. Hop-by-hop request headers are stripped before forwarding, including fields named by `Connection` plus common proxy/connection-only fields such as `Proxy-Connection`, `Keep-Alive`, `TE`, `Trailer`, `Transfer-Encoding`, and `Upgrade`; close state from `Connection: close` is also cleared. Forwarded non-CONNECT requests append `Via: 1.1 x-tunnel`, preserving any existing `Via` values. CONNECT tunnel payload bytes remain opaque and do not receive proxy-added request headers.
 
 ## 11. Current Risk Map
 

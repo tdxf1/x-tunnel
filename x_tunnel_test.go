@@ -831,12 +831,26 @@ func TestValidateHostPortRejectsWhitespace(t *testing.T) {
 	if err := validateListenHostPort(":8080"); err != nil {
 		t.Fatalf("validateListenHostPort accepted empty listen host before: %v", err)
 	}
+	if err := validateHostPort("Example.COM:443"); err != nil {
+		t.Fatalf("validateHostPort rejected uppercase hostname: %v", err)
+	}
+	if err := validateHostPort("example.com.:443"); err != nil {
+		t.Fatalf("validateHostPort rejected trailing-dot hostname: %v", err)
+	}
 	for _, value := range []string{"bad host:80", "example.com:80\t", "example.com:\n80"} {
 		if err := validateHostPort(value); err == nil {
 			t.Fatalf("validateHostPort(%q) accepted whitespace", value)
 		}
 		if err := validateListenHostPort(value); err == nil {
 			t.Fatalf("validateListenHostPort(%q) accepted whitespace", value)
+		}
+	}
+}
+
+func TestValidateHostPortRejectsInvalidHostname(t *testing.T) {
+	for _, value := range []string{"bad_host.example:80", "-bad.example:80", "bad-.example:80", ".example.com:80", "example..com:80"} {
+		if err := validateHostPort(value); err == nil {
+			t.Fatalf("validateHostPort(%q) accepted invalid hostname", value)
 		}
 	}
 }
@@ -1251,6 +1265,45 @@ func TestParseTargetPolicyRejectsInvalidHostPattern(t *testing.T) {
 	}
 	if _, err := parseTargetPolicy("", "", "bad host.example", ""); err == nil {
 		t.Fatal("parseTargetPolicy accepted host pattern with whitespace")
+	}
+}
+
+func TestEnsureTargetAllowed(t *testing.T) {
+	oldPolicy := targetPolicy
+	t.Cleanup(func() {
+		targetPolicy = oldPolicy
+	})
+
+	targetPolicy = nil
+	if err := ensureTargetAllowed("192.0.2.1:443"); err != nil {
+		t.Fatalf("ensureTargetAllowed with nil policy returned error: %v", err)
+	}
+
+	policy, err := parseTargetPolicy("10.0.0.0/8", "", "", "blocked.example.com")
+	if err != nil {
+		t.Fatalf("parseTargetPolicy returned error: %v", err)
+	}
+	targetPolicy = policy
+
+	tests := []struct {
+		name    string
+		target  string
+		wantErr bool
+	}{
+		{name: "allowed CIDR target", target: "10.1.2.3:443", wantErr: false},
+		{name: "outside allow CIDR", target: "192.0.2.1:443", wantErr: true},
+		{name: "denied host target", target: "blocked.example.com:443", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ensureTargetAllowed(tt.target)
+			if tt.wantErr && err == nil {
+				t.Fatalf("ensureTargetAllowed(%q) returned nil, want error", tt.target)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("ensureTargetAllowed(%q) returned error: %v", tt.target, err)
+			}
+		})
 	}
 }
 
@@ -1998,6 +2051,11 @@ func TestReadLocalSOCKS5RequestMalformedReplyStatus(t *testing.T) {
 			wantReply: 0x04,
 		},
 		{
+			name:      "invalid CONNECT domain",
+			raw:       append([]byte{0x05, 0x01, 0x00, 0x03, 16}, append([]byte("bad_host.example"), 0, 80)...),
+			wantReply: 0x04,
+		},
+		{
 			name:      "truncated address",
 			raw:       []byte{0x05, 0x01, 0x00, 0x01, 127},
 			wantReply: 0x00,
@@ -2484,6 +2542,11 @@ func TestHTTPProxyTarget(t *testing.T) {
 			req:  &http.Request{Method: http.MethodGet, Host: "[2001:db8::1]", URL: &url.URL{Path: "/"}},
 			want: "[2001:db8::1]:80",
 		},
+		{
+			name: "uppercase hostname",
+			req:  &http.Request{Method: http.MethodGet, Host: "Example.COM", URL: &url.URL{Path: "/"}},
+			want: "Example.COM:80",
+		},
 	}
 
 	for _, tt := range tests {
@@ -2531,6 +2594,14 @@ func TestHTTPProxyTargetRejectsMalformed(t *testing.T) {
 		{
 			name: "unbracketed ipv6",
 			req:  &http.Request{Method: http.MethodGet, Host: "2001:db8::1", URL: &url.URL{Path: "/"}},
+		},
+		{
+			name: "invalid domain underscore",
+			req:  &http.Request{Method: http.MethodGet, Host: "bad_host.example", URL: &url.URL{Path: "/"}},
+		},
+		{
+			name: "invalid domain hyphen prefix",
+			req:  &http.Request{Method: http.MethodGet, Host: "-bad.example", URL: &url.URL{Path: "/"}},
 		},
 	}
 

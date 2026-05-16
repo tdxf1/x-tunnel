@@ -631,6 +631,11 @@ func validateHostPortValue(value string, allowEmptyHost bool) error {
 	if !allowEmptyHost && strings.TrimSpace(host) == "" {
 		return fmt.Errorf("host 不能为空")
 	}
+	if strings.TrimSpace(host) != "" {
+		if err := validateHostnameOrIP(host); err != nil {
+			return err
+		}
+	}
 	if strings.TrimSpace(port) == "" {
 		return fmt.Errorf("port 不能为空")
 	}
@@ -1187,6 +1192,7 @@ func validateHostPattern(pattern string) error {
 }
 
 func validHostname(host string) bool {
+	host = strings.ToLower(host)
 	if host == "" || len(host) > 253 {
 		return false
 	}
@@ -1206,6 +1212,17 @@ func validHostname(host string) bool {
 		}
 	}
 	return true
+}
+
+func validateHostnameOrIP(host string) error {
+	if net.ParseIP(host) != nil {
+		return nil
+	}
+	host = normalizeTargetHost(host)
+	if !validHostname(host) {
+		return fmt.Errorf("host %q 不是合法 IP 或 DNS 主机名", host)
+	}
+	return nil
 }
 
 func (p *TargetPolicy) Allows(target string) (bool, string) {
@@ -4241,6 +4258,9 @@ func normalizeHTTPProxyAuthority(authority, defaultPort string) (string, error) 
 		if strings.TrimSpace(host) == "" {
 			return "", fmt.Errorf("host 不能为空")
 		}
+		if err := validateHostnameOrIP(host); err != nil {
+			return "", err
+		}
 		if p, err := strconv.Atoi(port); err != nil || p <= 0 || p > 65535 {
 			return "", fmt.Errorf("port 必须在 1-65535 之间")
 		}
@@ -4258,6 +4278,9 @@ func normalizeHTTPProxyAuthority(authority, defaultPort string) (string, error) 
 	}
 	if strings.Contains(authority, ":") {
 		return "", fmt.Errorf("代理目标地址无效")
+	}
+	if err := validateHostnameOrIP(authority); err != nil {
+		return "", err
 	}
 	return net.JoinHostPort(authority, defaultPort), nil
 }

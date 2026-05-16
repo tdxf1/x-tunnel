@@ -1585,3 +1585,37 @@ Review:
 
 - WebSocket token auth now accepts a valid token anywhere in the offered `Sec-WebSocket-Protocol` list while still rejecting partial or missing tokens.
 - Local HTTP proxy auth now accepts normal Basic auth casing/whitespace variants, and sanitized ordinary HTTP forwarding no longer regenerates `Connection: close` after stripping hop-by-hop headers.
+
+Post Phase 8 target hostname validation:
+
+- [x] Reject non-IP target hosts that are not valid DNS hostnames before opening TCP/UDP tunnel streams.
+- [x] Apply the same hostname validation to HTTP proxy authorities and local SOCKS5 CONNECT domain targets.
+- [x] Add focused boundary tests and update protocol documentation.
+- [x] Run full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'Test(ValidateHostPort|ValidateListenRule|HTTPProxyTarget|HandleHTTPRejectsMalformedProxyTarget|ReadLocalSOCKS5RequestMalformedReplyStatus|ReadLocalSOCKS5Request|EnsureTargetAllowed)' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 57.6% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- Target `host:port` validation now rejects non-IP hosts that are not valid DNS hostnames before smux stream creation.
+- HTTP proxy authorities and local SOCKS5 CONNECT domain targets now fail locally instead of reaching remote DNS/dial paths.
+
+Post Phase 8 target policy wrapper coverage:
+
+- [x] Add direct `ensureTargetAllowed` coverage for nil policy, allowed target, and denied target errors.
+- [x] Verify global `targetPolicy` is restored after tests.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- Covered by the focused/full/coverage/race verification in the target hostname validation batch.
+
+Review:
+
+- `ensureTargetAllowed` now has direct coverage for nil policy, allowed CIDR target, outside-allow CIDR rejection, and denied host rejection.
