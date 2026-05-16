@@ -1274,3 +1274,8 @@ Verification:
 - `go test -count=1 ./...`: pass.
 - `go test -cover -count=1 ./...`: pass, `coverage: 51.2% of statements`.
 - `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- Upstream SOCKS5 request writers now use `writeAll`, so progressive short writes are completed and silent short writes fail with `io.ErrShortWrite`.
+- Focused short-write regressions plus full, coverage, and race suites passed.
