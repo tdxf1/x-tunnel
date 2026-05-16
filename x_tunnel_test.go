@@ -2466,6 +2466,25 @@ func TestUDPReplyRoundTrip(t *testing.T) {
 	}
 }
 
+func TestReadUDPReplyMalformed(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  []byte
+	}{
+		{name: "short header", raw: []byte{0, 1, 0}},
+		{name: "truncated address", raw: []byte{0, 4, 0, 0, '1', '.', '2'}},
+		{name: "truncated payload", raw: []byte{0, 0, 0, 4, 'd', 'n'}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, _, err := readUDPReply(bytes.NewReader(tt.raw)); err == nil {
+				t.Fatalf("readUDPReply accepted malformed frame %v", tt.raw)
+			}
+		})
+	}
+}
+
 func TestUDPReplyRejectsOversizedFields(t *testing.T) {
 	if err := writeUDPReply(io.Discard, strings.Repeat("x", 65536), nil); err == nil {
 		t.Fatal("writeUDPReply accepted oversized addr")

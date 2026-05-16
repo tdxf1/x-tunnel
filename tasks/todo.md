@@ -1071,3 +1071,17 @@ Verification:
 - `go test -run 'Test(LocalTunnelIntegration|IntegrationMaxClientsRejectsNewClient|IntegrationSourceCIDRRejectionMetrics|IntegrationTCPStatusRejectsBlockedTarget)$' -count=1 ./...`: pass.
 - `go test -count=1 ./...`: pass.
 - `go test -cover -count=1 ./...`: pass, `coverage: 46.7% of statements`.
+
+Post Phase 8 UDP reply malformed frame tests:
+
+- [x] Add explicit `readUDPReply` coverage for short headers.
+- [x] Add explicit coverage for truncated address and payload fields.
+- [x] Preserve existing round-trip and fuzz coverage.
+- [x] Run focused/full/coverage verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'Test(UDPReplyRoundTrip|ReadUDPReplyMalformed|UDPReplyRejectsOversizedFields)' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 47.1% of statements`.
