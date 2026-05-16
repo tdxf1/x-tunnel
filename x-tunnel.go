@@ -1738,6 +1738,10 @@ func newSOCKS5UDPRelay(targetAddr string) (*SOCKS5UDPRelay, error) {
 			tcpConn.Close()
 			return nil, err
 		}
+		if lenBuf[0] == 0 {
+			tcpConn.Close()
+			return nil, fmt.Errorf("UDP ASSOCIATE域名不能为空")
+		}
 		domainBuf := make([]byte, lenBuf[0])
 		if _, err := io.ReadFull(tcpConn, domainBuf); err != nil {
 			tcpConn.Close()

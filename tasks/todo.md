@@ -2750,3 +2750,22 @@ Review:
 
 - Upstream SOCKS5 CONNECT now has byte-level coverage for domain and IPv6 request encoding.
 - Successful domain-name and IPv6 bound-address responses are covered, not only IPv4 response parsing.
+
+Post Phase 8 SOCKS5 UDP ASSOCIATE domain relay validation:
+
+- [x] Reject upstream SOCKS5 UDP ASSOCIATE domain relay responses with empty domain names.
+- [x] Cover successful domain-form relay addresses from the upstream SOCKS5 proxy.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `go test -run 'TestNewSOCKS5UDPRelay|TestSOCKS5UDPRelay|TestParseSOCKS5UDPResp' -count=1 ./...`: pass.
+- `git diff --check`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 76.1% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- Upstream SOCKS5 UDP ASSOCIATE domain-form relay responses now reject empty domain names before UDP address resolution.
+- Domain-form relay responses are covered with a successful `127.0.0.1:port` relay address path.

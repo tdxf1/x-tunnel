@@ -3169,6 +3169,7 @@ func TestNewSOCKS5UDPRelayRejectsInvalidAssociateResponse(t *testing.T) {
 		{name: "bad version", response: []byte{0x04, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0, 53}, want: "版本"},
 		{name: "bad rsv", response: []byte{0x05, 0x00, 0x01, 0x01, 127, 0, 0, 1, 0, 53}, want: "RSV"},
 		{name: "unknown address type", response: []byte{0x05, 0x00, 0x00, 0x09}, want: "地址类型无效"},
+		{name: "empty domain", response: []byte{0x05, 0x00, 0x00, 0x03, 0, 0x14, 0xe9}, want: "域名"},
 		{name: "zero relay port", response: []byte{0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0, 0}, want: "端口"},
 	}
 
@@ -3214,6 +3215,30 @@ func TestNewSOCKS5UDPRelayAcceptsIPv6AssociateRelay(t *testing.T) {
 
 	if relay.relayAddr == nil || !relay.relayAddr.IP.Equal(ip) || relay.relayAddr.Port != 5353 {
 		t.Fatalf("relay addr = %#v, want [%s]:5353", relay.relayAddr, ip)
+	}
+}
+
+func TestNewSOCKS5UDPRelayAcceptsDomainAssociateRelay(t *testing.T) {
+	const relayPort = 5355
+	domain := "127.0.0.1"
+	response := []byte{0x05, 0x00, 0x00, 0x03, byte(len(domain))}
+	response = append(response, []byte(domain)...)
+	response = append(response, byte(relayPort>>8), byte(relayPort&0xff))
+	proxyAddr, waitProxy := startSOCKS5UDPAssociateResponse(t, response)
+
+	oldConfig := socks5Config
+	socks5Config = &SOCKS5Config{Host: proxyAddr}
+	t.Cleanup(func() { socks5Config = oldConfig })
+
+	relay, err := newSOCKS5UDPRelay("127.0.0.1:53")
+	if err != nil {
+		t.Fatalf("newSOCKS5UDPRelay returned error: %v", err)
+	}
+	defer relay.Close()
+	waitProxy()
+
+	if relay.relayAddr == nil || !relay.relayAddr.IP.Equal(net.ParseIP(domain)) || relay.relayAddr.Port != relayPort {
+		t.Fatalf("relay addr = %#v, want %s:%d", relay.relayAddr, domain, relayPort)
 	}
 }
 
