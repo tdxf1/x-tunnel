@@ -74,8 +74,8 @@ func TestLocalTunnelIntegration(t *testing.T) {
 		"-metrics", metricsAddr,
 	)
 	defer stopProcess(server)
-	waitTCP(t, ctx, wsAddr)
-	waitTCP(t, ctx, metricsAddr)
+	waitTCP(t, ctx, wsAddr, server)
+	waitTCP(t, ctx, metricsAddr, server)
 
 	client := startXTunnel(t, ctx, binPath, clientLog,
 		"-l", "socks5://"+socksAddr+",tcp://"+tcpAddr+"/"+targetAddr+",http://"+httpProxyAddr,
@@ -85,10 +85,10 @@ func TestLocalTunnelIntegration(t *testing.T) {
 		"-metrics", clientMetricsAddr,
 	)
 	defer stopProcess(client)
-	waitTCP(t, ctx, socksAddr)
-	waitTCP(t, ctx, tcpAddr)
-	waitTCP(t, ctx, httpProxyAddr)
-	waitTCP(t, ctx, clientMetricsAddr)
+	waitTCP(t, ctx, socksAddr, client)
+	waitTCP(t, ctx, tcpAddr, client)
+	waitTCP(t, ctx, httpProxyAddr, client)
+	waitTCP(t, ctx, clientMetricsAddr, client)
 	waitLogContains(t, ctx, clientLog, "协议协商成功")
 	waitLogContains(t, ctx, serverLog, "协议协商成功")
 
@@ -156,7 +156,7 @@ func TestIntegrationLocalProxyAuth(t *testing.T) {
 		"-allow-target", "127.0.0.0/8",
 	)
 	defer stopProcess(server)
-	waitTCP(t, ctx, wsAddr)
+	waitTCP(t, ctx, wsAddr, server)
 
 	client := startXTunnel(t, ctx, binPath, clientLog,
 		"-l", "socks5://user:pass@"+socksAddr+",http://user:pass@"+httpProxyAddr,
@@ -165,8 +165,8 @@ func TestIntegrationLocalProxyAuth(t *testing.T) {
 		"-n", "1",
 	)
 	defer stopProcess(client)
-	waitTCP(t, ctx, socksAddr)
-	waitTCP(t, ctx, httpProxyAddr)
+	waitTCP(t, ctx, socksAddr, client)
+	waitTCP(t, ctx, httpProxyAddr, client)
 	waitLogContains(t, ctx, clientLog, "协议协商成功")
 	waitLogContains(t, ctx, serverLog, "协议协商成功")
 
@@ -234,7 +234,7 @@ func TestIntegrationUpstreamSOCKS5Auth(t *testing.T) {
 		"-f", "socks5://upuser:uppass@"+upstreamAddr,
 	)
 	defer stopProcess(okServer)
-	waitTCP(t, ctx, okWSAddr)
+	waitTCP(t, ctx, okWSAddr, okServer)
 
 	okClient := startXTunnel(t, ctx, binPath, okClientLog,
 		"-l", "http://"+okHTTPProxyAddr,
@@ -243,7 +243,7 @@ func TestIntegrationUpstreamSOCKS5Auth(t *testing.T) {
 		"-n", "1",
 	)
 	defer stopProcess(okClient)
-	waitTCP(t, ctx, okHTTPProxyAddr)
+	waitTCP(t, ctx, okHTTPProxyAddr, okClient)
 	waitLogContains(t, ctx, okClientLog, "协议协商成功")
 	assertBody(t, "upstream socks auth", fetchViaHTTPProxy(t, okHTTPProxyAddr, "http://"+targetAddr+"/payload"), body)
 
@@ -260,7 +260,7 @@ func TestIntegrationUpstreamSOCKS5Auth(t *testing.T) {
 		"-f", "socks5://upuser:wrong@"+upstreamAddr,
 	)
 	defer stopProcess(badServer)
-	waitTCP(t, ctx, badWSAddr)
+	waitTCP(t, ctx, badWSAddr, badServer)
 
 	badClient := startXTunnel(t, ctx, binPath, badClientLog,
 		"-l", "http://"+badHTTPProxyAddr,
@@ -269,7 +269,7 @@ func TestIntegrationUpstreamSOCKS5Auth(t *testing.T) {
 		"-n", "1",
 	)
 	defer stopProcess(badClient)
-	waitTCP(t, ctx, badHTTPProxyAddr)
+	waitTCP(t, ctx, badHTTPProxyAddr, badClient)
 	waitLogContains(t, ctx, badClientLog, "协议协商成功")
 	if got := fetchViaHTTPProxyStatus(t, badHTTPProxyAddr, "http://"+targetAddr+"/payload"); got != http.StatusBadGateway {
 		t.Fatalf("HTTP proxy status with bad upstream SOCKS5 auth = %d, want %d", got, http.StatusBadGateway)
@@ -310,7 +310,7 @@ func TestIntegrationLocalWSSFallback(t *testing.T) {
 		"-allow-target", "127.0.0.0/8",
 	)
 	defer stopProcess(server)
-	waitTCP(t, ctx, wssAddr)
+	waitTCP(t, ctx, wssAddr, server)
 
 	client := startXTunnel(t, ctx, binPath, clientLog,
 		"-l", "tcp://"+tcpAddr+"/"+targetAddr,
@@ -320,7 +320,7 @@ func TestIntegrationLocalWSSFallback(t *testing.T) {
 		"-insecure",
 	)
 	defer stopProcess(client)
-	waitTCP(t, ctx, tcpAddr)
+	waitTCP(t, ctx, tcpAddr, client)
 	waitLogContains(t, ctx, clientLog, "fallback 模式已启用")
 	waitLogContains(t, ctx, clientLog, "协议协商成功")
 	waitLogContains(t, ctx, serverLog, "协议协商成功")
@@ -364,7 +364,7 @@ func TestIntegrationLocalWSSMTLS(t *testing.T) {
 		"-client-ca", caPath,
 	)
 	defer stopProcess(server)
-	waitTCP(t, ctx, wssAddr)
+	waitTCP(t, ctx, wssAddr, server)
 	waitLogContains(t, ctx, serverLog, "mTLS 客户端证书认证已启用")
 
 	badClient := startXTunnel(t, ctx, binPath, badClientLog,
@@ -387,7 +387,7 @@ func TestIntegrationLocalWSSMTLS(t *testing.T) {
 		"-client-key", clientKeyPath,
 	)
 	defer stopProcess(client)
-	waitTCP(t, ctx, tcpAddr)
+	waitTCP(t, ctx, tcpAddr, client)
 	waitLogContains(t, ctx, clientLog, "协议协商成功")
 	waitLogContains(t, ctx, serverLog, "协议协商成功")
 
@@ -431,8 +431,8 @@ func TestIntegrationMaxClientsRejectsNewClient(t *testing.T) {
 		"-metrics", metricsAddr,
 	)
 	defer stopProcess(server)
-	waitTCP(t, ctx, wsAddr)
-	waitTCP(t, ctx, metricsAddr)
+	waitTCP(t, ctx, wsAddr, server)
+	waitTCP(t, ctx, metricsAddr, server)
 
 	firstClient := startXTunnel(t, ctx, binPath, firstClientLog,
 		"-l", "socks5://"+firstSocksAddr,
@@ -441,7 +441,7 @@ func TestIntegrationMaxClientsRejectsNewClient(t *testing.T) {
 		"-n", "1",
 	)
 	defer stopProcess(firstClient)
-	waitTCP(t, ctx, firstSocksAddr)
+	waitTCP(t, ctx, firstSocksAddr, firstClient)
 	waitLogContains(t, ctx, firstClientLog, "协议协商成功")
 
 	secondClient := startXTunnel(t, ctx, binPath, secondClientLog,
@@ -451,7 +451,7 @@ func TestIntegrationMaxClientsRejectsNewClient(t *testing.T) {
 		"-n", "1",
 	)
 	defer stopProcess(secondClient)
-	waitTCP(t, ctx, secondSocksAddr)
+	waitTCP(t, ctx, secondSocksAddr, secondClient)
 	waitLogContains(t, ctx, serverLog, "拒绝客户端会话")
 	waitLogContains(t, ctx, secondClientLog, "协议协商失败")
 	assertMetricValue(t, fetchHTTP(t, "http://"+metricsAddr+"/metrics"), "x_tunnel_server_client_session_rejections_total", "1")
@@ -483,8 +483,8 @@ func TestIntegrationSourceCIDRRejectionMetrics(t *testing.T) {
 		"-metrics", metricsAddr,
 	)
 	defer stopProcess(server)
-	waitTCP(t, ctx, wsAddr)
-	waitTCP(t, ctx, metricsAddr)
+	waitTCP(t, ctx, wsAddr, server)
+	waitTCP(t, ctx, metricsAddr, server)
 
 	if got := fetchHTTPStatus(t, "http://"+wsAddr+"/tunnel"); got != http.StatusForbidden {
 		t.Fatalf("source CIDR rejection status = %d, want %d", got, http.StatusForbidden)
@@ -577,8 +577,8 @@ func TestIntegrationTCPStatusRejectsBlockedTarget(t *testing.T) {
 		"-metrics", metricsAddr,
 	)
 	defer stopProcess(server)
-	waitTCP(t, ctx, wsAddr)
-	waitTCP(t, ctx, metricsAddr)
+	waitTCP(t, ctx, wsAddr, server)
+	waitTCP(t, ctx, metricsAddr, server)
 
 	client := startXTunnel(t, ctx, binPath, clientLog,
 		"-l", "socks5://"+socksAddr+",http://"+httpProxyAddr,
@@ -587,8 +587,8 @@ func TestIntegrationTCPStatusRejectsBlockedTarget(t *testing.T) {
 		"-n", "1",
 	)
 	defer stopProcess(client)
-	waitTCP(t, ctx, socksAddr)
-	waitTCP(t, ctx, httpProxyAddr)
+	waitTCP(t, ctx, socksAddr, client)
+	waitTCP(t, ctx, httpProxyAddr, client)
 	waitLogContains(t, ctx, clientLog, "协议协商成功")
 
 	if got := socks5ConnectReplyCode(t, socksAddr, "127.0.0.1:1"); got == 0x00 {
@@ -602,7 +602,14 @@ func TestIntegrationTCPStatusRejectsBlockedTarget(t *testing.T) {
 	assertMetricValue(t, fetchHTTP(t, "http://"+metricsAddr+"/metrics"), "x_tunnel_server_target_rejections_total", "2")
 }
 
-func startXTunnel(t *testing.T, ctx context.Context, binPath, logPath string, args ...string) *exec.Cmd {
+type xtunnelProcess struct {
+	cmd     *exec.Cmd
+	logPath string
+	done    chan struct{}
+	err     error
+}
+
+func startXTunnel(t *testing.T, ctx context.Context, binPath, logPath string, args ...string) *xtunnelProcess {
 	t.Helper()
 	logFile, err := os.Create(logPath)
 	if err != nil {
@@ -615,7 +622,12 @@ func startXTunnel(t *testing.T, ctx context.Context, binPath, logPath string, ar
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start x-tunnel %v: %v", args, err)
 	}
-	return cmd
+	proc := &xtunnelProcess{cmd: cmd, logPath: logPath, done: make(chan struct{})}
+	go func() {
+		proc.err = cmd.Wait()
+		close(proc.done)
+	}()
+	return proc
 }
 
 func runXTunnelExpectStartupFailure(t *testing.T, ctx context.Context, binPath string, args []string, wants ...string) {
@@ -635,21 +647,16 @@ func runXTunnelExpectStartupFailure(t *testing.T, ctx context.Context, binPath s
 	}
 }
 
-func stopProcess(cmd *exec.Cmd) {
-	if cmd == nil || cmd.Process == nil {
+func stopProcess(proc *xtunnelProcess) {
+	if proc == nil || proc.cmd == nil || proc.cmd.Process == nil {
 		return
 	}
-	_ = cmd.Process.Signal(os.Interrupt)
-	done := make(chan struct{})
-	go func() {
-		_ = cmd.Wait()
-		close(done)
-	}()
+	_ = proc.cmd.Process.Signal(os.Interrupt)
 	select {
-	case <-done:
+	case <-proc.done:
 	case <-time.After(2 * time.Second):
-		_ = cmd.Process.Kill()
-		<-done
+		_ = proc.cmd.Process.Kill()
+		<-proc.done
 	}
 }
 
@@ -663,7 +670,7 @@ func freeTCPAddr(t *testing.T) string {
 	return l.Addr().String()
 }
 
-func waitTCP(t *testing.T, ctx context.Context, addr string) {
+func waitTCP(t *testing.T, ctx context.Context, addr string, procs ...*xtunnelProcess) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -676,7 +683,19 @@ func waitTCP(t *testing.T, ctx context.Context, addr string) {
 		if time.Now().After(deadline) {
 			t.Fatalf("tcp %s did not open: %v", addr, err)
 		}
-		time.Sleep(50 * time.Millisecond)
+		for _, proc := range procs {
+			select {
+			case <-proc.done:
+				raw, _ := os.ReadFile(proc.logPath)
+				t.Fatalf("x-tunnel exited while waiting for tcp %s: %v\nlog %s:\n%s", addr, proc.err, proc.logPath, raw)
+			default:
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("context ended while waiting for tcp %s: %v", addr, ctx.Err())
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
 }
 

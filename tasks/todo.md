@@ -1199,3 +1199,18 @@ Verification:
 - `go test -count=1 ./...`: pass.
 - `go test -cover -count=1 ./...`: pass, `coverage: 50.8% of statements`.
 - `go test -race -count=1 ./...`: pass.
+
+Post Phase 8 integration process diagnostics:
+
+- [x] Wrap started x-tunnel subprocesses with log path and exit status.
+- [x] Let `waitTCP` fail fast with subprocess logs when a watched process exits before the port opens.
+- [x] Pass watched processes to key server/client listener waits.
+- [x] Run focused integration/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'Test(LocalTunnelIntegration|IntegrationLocalProxyAuth|IntegrationMaxClientsRejectsNewClient|IntegrationTCPStatusRejectsBlockedTarget)$' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 51.0% of statements`.
+- `go test -race -count=1 ./...`: pass.
