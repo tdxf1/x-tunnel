@@ -157,11 +157,12 @@ Capability flags:
 | `1 << 3` | IPStrategy | IP strategy byte is understood. |
 | `1 << 4` | TCPStatus | TCP streams begin with an open-status frame before proxied bytes. |
 | `1 << 5` | UDPStatus | UDP streams begin with an open-status frame before UDP chunks. |
+| `1 << 6` | OpenStatusCode | TCPStatus/UDPStatus frames include a structured open error code byte. |
 
 Current client behavior:
 
 - Requires negotiated TCP and Ping capabilities.
-- Advertises UDP, IPStrategy, TCPStatus, and UDPStatus support. TCPStatus and UDPStatus add per-stream open-status frames only when both peers negotiate them; legacy channels keep the previous close-only behavior.
+- Advertises UDP, IPStrategy, TCPStatus, UDPStatus, and OpenStatusCode support. TCPStatus and UDPStatus add per-stream open-status frames only when both peers negotiate them; OpenStatusCode changes only the status-frame shape when both peers negotiate it. Legacy channels keep the previous close-only behavior.
 - Treats EOF, unexpected EOF, or timeout while waiting for hello as legacy server behavior.
 - Fails the channel cleanly on explicit rejection or insufficient capabilities.
 
@@ -172,9 +173,11 @@ After a TCP stream open header, legacy peers proxy raw bytes until either direct
 When both peers negotiate `TCPStatus`, the server first writes a TCP open-status frame:
 
 ```text
-----------------+------------------+----------------------+
-| status (u8)   | msg_len (BE16)   | message bytes ...    |
-+----------------+------------------+----------------------+
+legacy TCPStatus:
+status (u8) | msg_len (BE16) | message bytes ...
+
+TCPStatus + OpenStatusCode:
+status (u8) | code (u8) | msg_len (BE16) | message bytes ...
 ```
 
 Status values:
@@ -183,6 +186,16 @@ Status values:
 | --- | --- | --- |
 | `0` | OK | Target policy and remote TCP dial succeeded. Proxied bytes follow. |
 | `1` | Error | Target policy or remote TCP dial failed. The message is diagnostic text and the stream closes. |
+
+When OpenStatusCode is negotiated, `code` is:
+
+| Value | Name | Meaning |
+| --- | --- | --- |
+| `0` | None | No structured code; used for OK and compatibility fallback. |
+| `1` | BadTarget | Invalid IP strategy or malformed target. |
+| `2` | PolicyDenied | Target policy rejected the target. |
+| `3` | DialFailed | Remote TCP dial, UDP resolve/listen, or upstream SOCKS5 relay setup failed. |
+| `4` | ResourceLimit | The server rejected the stream because a resource limit was reached. |
 
 New clients wait for this status before returning local SOCKS5 or HTTP CONNECT success. Legacy channels do not wait for a status frame and keep the older best-effort behavior.
 
@@ -211,9 +224,11 @@ A UDP stream is opened for one current target. The local SOCKS5 UDP association 
 When both peers negotiate `UDPStatus`, the server first writes a UDP open-status frame using the same status-frame shape as TCPStatus:
 
 ```text
-----------------+------------------+----------------------+
-| status (u8)   | msg_len (BE16)   | message bytes ...    |
-+----------------+------------------+----------------------+
+legacy UDPStatus:
+status (u8) | msg_len (BE16) | message bytes ...
+
+UDPStatus + OpenStatusCode:
+status (u8) | code (u8) | msg_len (BE16) | message bytes ...
 ```
 
 Status values:
@@ -222,6 +237,8 @@ Status values:
 | --- | --- | --- |
 | `0` | OK | Target policy and UDP relay setup succeeded. UDP chunks follow. |
 | `1` | Error | Target policy, target parsing, or UDP relay setup failed. The message is diagnostic text and the stream closes. |
+
+When OpenStatusCode is negotiated, UDP uses the same code values defined for TCPStatus.
 
 Legacy channels do not wait for a status frame and keep the older best-effort behavior. After any negotiated OK status, client-to-server datagrams are sent as chunks:
 
@@ -296,12 +313,12 @@ Successful CONNECT requests return `HTTP/1.1 200 Connection Established` and the
 ### Compatibility Risks
 
 - Protocol version/capability negotiation now exists on a hello control stream, but TCP/UDP/Ping stream headers are still unversioned for compatibility.
-- Optional future features such as compression, metrics, stronger auth, or status replies must be gated behind capability flags.
-- Unknown stream kinds are explicitly rejected and counted, but future structured status replies still require negotiated framing.
+- Optional future features such as compression, stronger auth, or additional status fields must be gated behind capability flags.
+- Unknown stream kinds are explicitly rejected and counted. Structured open error codes are negotiated with OpenStatusCode and must not be sent to peers that did not negotiate it.
 
 ### Reliability Risks
 
-- TCP open status is negotiated, but UDP errors and mid-stream TCP failures are still not structured.
+- TCP/UDP open failures have negotiated status frames and optional structured open error codes. Mid-stream TCP failures are still byte-stream closures rather than structured protocol errors.
 - Reconnect timing and major network timeouts are configurable, but future paths should keep using `GlobalConfig` rather than reintroducing literals.
 - Graceful shutdown and listener lifecycle are not centralized.
 

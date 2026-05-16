@@ -2980,3 +2980,24 @@ Review:
 
 - `/metrics` now exports `x_tunnel_client_channel_up{channel="N"}` for each client pool slot.
 - `/metrics` also exports `x_tunnel_client_channel_rtt_seconds{channel="N"}` from the existing atomic RTT probe state without exposing target IPs or client IDs.
+
+Post Phase 9 structured open error codes:
+
+- [x] Add a capability-gated open-status code frame while keeping the legacy status frame unchanged.
+- [x] Map server-side bad target, policy denied, dial failure, and resource-limit cases to stable error codes.
+- [x] Cover protocol wire bytes plus TCP/UDP client/server compatibility paths.
+- [x] Update protocol documentation and run focused/full/coverage/race verification before commit.
+
+Verification:
+
+- `go test -run 'OpenStatus|StatusCode|StreamLimitReached|NegotiateClientProtocolSuccess|HandleSmuxStreamRejectsPolicyWithStatusCode' -count=1 ./...`: pass.
+- `git diff --check`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 77.4% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- Open-status code framing is negotiated by `OpenStatusCode`; peers without it keep the old `status + msg_len + message` frame.
+- TCP and UDP open failures now carry stable structured codes for bad target, policy denied, dial/setup failure, and resource limit.
+- Protocol docs and tests cover both wire formats so future frame changes must be explicit.

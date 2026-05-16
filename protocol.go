@@ -39,6 +39,7 @@ const (
 	protocolCapabilityIPStrategy
 	protocolCapabilityTCPStatus
 	protocolCapabilityUDPStatus
+	protocolCapabilityOpenStatusCode
 )
 
 const (
@@ -49,6 +50,14 @@ const (
 const (
 	udpOpenStatusOK byte = iota
 	udpOpenStatusError
+)
+
+const (
+	openStatusCodeNone byte = iota
+	openStatusCodeBadTarget
+	openStatusCodePolicyDenied
+	openStatusCodeDialFailed
+	openStatusCodeResourceLimit
 )
 
 const protocolHelloMagic = "XTUN"
@@ -68,7 +77,8 @@ func currentProtocolCapabilities() uint32 {
 		protocolCapabilityPing |
 		protocolCapabilityIPStrategy |
 		protocolCapabilityTCPStatus |
-		protocolCapabilityUDPStatus
+		protocolCapabilityUDPStatus |
+		protocolCapabilityOpenStatusCode
 }
 
 func requiredProtocolCapabilities() uint32 {
@@ -152,12 +162,28 @@ func readTCPOpenStatus(r io.Reader) (byte, string, error) {
 	return readOpenStatus(r)
 }
 
+func writeTCPOpenStatusCode(w io.Writer, status byte, code byte, message string) error {
+	return writeOpenStatusCode(w, "TCP 打开状态消息", status, code, message)
+}
+
+func readTCPOpenStatusCode(r io.Reader) (byte, byte, string, error) {
+	return readOpenStatusCode(r)
+}
+
 func writeUDPOpenStatus(w io.Writer, status byte, message string) error {
 	return writeOpenStatus(w, "UDP 打开状态消息", status, message)
 }
 
 func readUDPOpenStatus(r io.Reader) (byte, string, error) {
 	return readOpenStatus(r)
+}
+
+func writeUDPOpenStatusCode(w io.Writer, status byte, code byte, message string) error {
+	return writeOpenStatusCode(w, "UDP 打开状态消息", status, code, message)
+}
+
+func readUDPOpenStatusCode(r io.Reader) (byte, byte, string, error) {
+	return readOpenStatusCode(r)
 }
 
 func writeOpenStatus(w io.Writer, fieldName string, status byte, message string) error {
@@ -184,6 +210,33 @@ func readOpenStatus(r io.Reader) (byte, string, error) {
 		return 0, "", err
 	}
 	return head[0], string(message), nil
+}
+
+func writeOpenStatusCode(w io.Writer, fieldName string, status byte, code byte, message string) error {
+	if err := validateProtocolFieldLen(fieldName, len(message)); err != nil {
+		return err
+	}
+	head := make([]byte, 4)
+	head[0] = status
+	head[1] = code
+	binary.BigEndian.PutUint16(head[2:4], uint16(len(message)))
+	if err := writeAll(w, head); err != nil {
+		return err
+	}
+	return writeOptionalPayload(w, []byte(message))
+}
+
+func readOpenStatusCode(r io.Reader) (byte, byte, string, error) {
+	head := make([]byte, 4)
+	if _, err := io.ReadFull(r, head); err != nil {
+		return 0, 0, "", err
+	}
+	msgLen := int(binary.BigEndian.Uint16(head[2:4]))
+	message, err := readExactPayload(r, msgLen)
+	if err != nil {
+		return 0, 0, "", err
+	}
+	return head[0], head[1], string(message), nil
 }
 
 func readSmuxOpenHeader(r io.Reader) (byte, byte, string, error) {
