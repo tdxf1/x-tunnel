@@ -1462,3 +1462,42 @@ Review:
 
 - Ordinary HTTP proxy requests now remove locally consumed `Proxy-Authorization`, proxy-only `Proxy-Connection`, fields named by `Connection`, and common hop-by-hop headers before forwarding.
 - `docs/protocol.md` now documents the forwarded-header boundary for HTTP proxy requests.
+
+Post Phase 8 HTTP proxy header integration:
+
+- [x] Extend local proxy auth integration to capture headers seen by the origin server.
+- [x] Send a raw authenticated HTTP proxy request with `Proxy-Authorization`, `Proxy-Connection`, `Connection`, and a connection-named header.
+- [x] Assert proxy-only and hop-by-hop headers are absent at the origin while end-to-end headers survive.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'TestIntegrationLocalProxyAuth$' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 56.1% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- The authenticated HTTP proxy integration now verifies the origin never sees `Proxy-Authorization`, `Proxy-Connection`, `Connection`, or a connection-named header.
+- The same real request verifies an end-to-end header survives forwarding, so the cleanup is scoped rather than blanket-stripping request metadata.
+
+Post Phase 8 protocol standards references:
+
+- [x] Add stable standards references for SOCKS5, SOCKS5 username/password auth, and HTTP semantics.
+- [x] Clarify that x-tunnel's documented local proxy behavior is derived from those references plus project-specific target-policy rules.
+- [x] Run docs-focused verification and full tests before commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `rg -n "RFC 1928|RFC 1929|RFC 9110|target-policy|hop-by-hop" docs/protocol.md`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 56.1% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- `docs/protocol.md` now links the SOCKS5, username/password auth, and HTTP semantics RFCs used as external protocol baselines.
+- The local proxy sections now separate standards-derived parsing from x-tunnel-specific target validation and policy checks.

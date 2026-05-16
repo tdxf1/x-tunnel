@@ -4,6 +4,12 @@ Status: current implementation snapshot.
 
 This document describes the wire behavior implemented in `x-tunnel.go` before any protocol evolution. It is intentionally conservative: any future change to these bytes must either remain backward-compatible or introduce explicit version/capability negotiation.
 
+Standards references used for local proxy behavior:
+
+- SOCKS Protocol Version 5: RFC 1928, <https://www.rfc-editor.org/rfc/rfc1928>
+- Username/Password Authentication for SOCKS V5: RFC 1929, <https://www.rfc-editor.org/rfc/rfc1929>
+- HTTP Semantics, including CONNECT and hop-by-hop header handling: RFC 9110, <https://www.rfc-editor.org/rfc/rfc9110>
+
 ## 1. Topology
 
 x-tunnel has two runtime roles:
@@ -233,6 +239,8 @@ Limits:
 
 ## 9. SOCKS5 UDP Packet Format
 
+The local SOCKS5 command and UDP packet parsing follows RFC 1928 for supported commands and address encodings, with additional x-tunnel target-policy checks before remote streams are opened.
+
 The local SOCKS5 UDP association accepts standard SOCKS5 UDP request packets:
 
 ```text
@@ -248,6 +256,8 @@ Current behavior:
 - UDP destination ports listed in `-block` are silently dropped.
 
 ## 10. Local HTTP Proxy Behavior
+
+The local HTTP proxy follows RFC 9110 semantics where applicable, then applies x-tunnel target validation and target-policy checks before opening a smux stream.
 
 The local HTTP listener accepts three proxy forms:
 

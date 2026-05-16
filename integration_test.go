@@ -157,11 +157,9 @@ func TestIntegrationLocalProxyAuth(t *testing.T) {
 	defer cancel()
 
 	const body = "x-tunnel local proxy auth payload\n"
-	originSawProxyAuth := make(chan string, 10)
+	originHeaders := make(chan http.Header, 10)
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Proxy-Authorization"); got != "" {
-			originSawProxyAuth <- got
-		}
+		originHeaders <- r.Header.Clone()
 		_, _ = w.Write([]byte(body))
 	}))
 	defer origin.Close()
@@ -209,6 +207,18 @@ func TestIntegrationLocalProxyAuth(t *testing.T) {
 		t.Fatalf("HTTP CONNECT status with wrong auth = %d, want %d", got, http.StatusProxyAuthRequired)
 	}
 	assertBody(t, "http proxy auth", fetchViaHTTPProxyWithAuth(t, httpProxyAddr, "http://"+targetAddr+"/payload", "user", "pass"), body)
+	assertOriginHeaderAbsent(t, originHeaders, "Proxy-Authorization")
+	rawHeaders := rawHTTPProxyGETWithAuth(t, httpProxyAddr, "http://"+targetAddr+"/headers", "user", "pass", originHeaders, map[string]string{
+		"Proxy-Connection": "keep-alive",
+		"Connection":       "X-Hop",
+		"X-Hop":            "drop-me",
+		"X-End-To-End":     "keep-me",
+	})
+	assertHeaderAbsent(t, rawHeaders, "Proxy-Authorization")
+	assertHeaderAbsent(t, rawHeaders, "Proxy-Connection")
+	assertHeaderAbsent(t, rawHeaders, "Connection")
+	assertHeaderAbsent(t, rawHeaders, "X-Hop")
+	assertHeaderValue(t, rawHeaders, "X-End-To-End", "keep-me")
 	assertBody(t, "http connect auth", fetchViaHTTPConnectWithAuth(t, httpProxyAddr, targetAddr, "/payload", "user", "pass"), body)
 
 	if got := socks5SelectedMethod(t, socksAddr, []byte{0x00}); got != 0xff {
@@ -218,11 +228,6 @@ func TestIntegrationLocalProxyAuth(t *testing.T) {
 		t.Fatalf("SOCKS5 wrong auth status = %d, want 1", got)
 	}
 	assertBody(t, "socks5 auth", fetchViaSOCKS5WithAuth(t, socksAddr, targetAddr, "/payload", "user", "pass"), body)
-	select {
-	case got := <-originSawProxyAuth:
-		t.Fatalf("origin received Proxy-Authorization header %q", got)
-	default:
-	}
 }
 
 func TestIntegrationUpstreamSOCKS5Auth(t *testing.T) {
@@ -881,6 +886,76 @@ func writeHTTPConnectRequest(t *testing.T, w io.Writer, targetAddr, username, pa
 		fmt.Fprintf(w, "Proxy-Authorization: Basic %s\r\n", auth)
 	}
 	fmt.Fprint(w, "\r\n")
+}
+
+func rawHTTPProxyGETWithAuth(t *testing.T, proxyAddr, rawURL, username, password string, originHeaders <-chan http.Header, headers map[string]string) http.Header {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", proxyAddr, 3*time.Second)
+	if err != nil {
+		t.Fatalf("dial HTTP proxy: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(integrationIOTimeout)); err != nil {
+		t.Fatalf("set HTTP proxy deadline: %v", err)
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parse raw proxy URL: %v", err)
+	}
+	fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: %s\r\n", rawURL, parsed.Host)
+	if username != "" || password != "" {
+		auth := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
+		fmt.Fprintf(conn, "Proxy-Authorization: Basic %s\r\n", auth)
+	}
+	for name, value := range headers {
+		fmt.Fprintf(conn, "%s: %s\r\n", name, value)
+	}
+	fmt.Fprint(conn, "\r\n")
+
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read raw proxy response: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("raw proxy response status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return readOriginHeaders(t, originHeaders)
+}
+
+func readOriginHeaders(t *testing.T, ch <-chan http.Header) http.Header {
+	t.Helper()
+	if ch == nil {
+		t.Fatal("origin header channel is nil")
+	}
+	select {
+	case headers := <-ch:
+		return headers
+	case <-time.After(integrationIOTimeout):
+		t.Fatal("timed out waiting for origin headers")
+	}
+	return nil
+}
+
+func assertOriginHeaderAbsent(t *testing.T, ch <-chan http.Header, name string) {
+	t.Helper()
+	assertHeaderAbsent(t, readOriginHeaders(t, ch), name)
+}
+
+func assertHeaderAbsent(t *testing.T, headers http.Header, name string) {
+	t.Helper()
+	if got := headers.Get(name); got != "" {
+		t.Fatalf("origin header %s = %q, want absent", name, got)
+	}
+}
+
+func assertHeaderValue(t *testing.T, headers http.Header, name, want string) {
+	t.Helper()
+	if got := headers.Get(name); got != want {
+		t.Fatalf("origin header %s = %q, want %q", name, got, want)
+	}
 }
 
 func parseHTTPStatusCode(t *testing.T, statusLine string) int {
