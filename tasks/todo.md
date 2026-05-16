@@ -2074,6 +2074,26 @@ Review:
 - Server UDP smux handling now has a success-path regression using a real loopback UDP echo target.
 - The test verifies both directions of the internal UDP stream protocol: chunk-to-datagram forwarding and validated UDP reply framing.
 
+Post Phase 8 DNS response status validation:
+
+- [x] Reject DNS messages that do not have the response bit set.
+- [x] Reject DNS responses with non-zero RCODE values before parsing answers.
+- [x] Fix DNS HTTPS response test seeds to be semantically valid responses.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'Test(ParseDNSResponseRejectsInvalidStatus|QueryDNSUDPReturnsECH|QueryDNSUDPReadsLargeECHResponse|QueryHTTPSRecordDispatchesTransports)|FuzzParseDNSResponse' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 68.2% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- DNS response parsing now rejects query-like messages and non-zero RCODE responses before answer parsing.
+- DNS HTTPS response seeds now set standard response flags, keeping parser tests semantically aligned with real DNS responses.
+
 Commit frequency and quality assessment:
 
 - [x] Collect commit cadence, author, and churn metrics from Git history.

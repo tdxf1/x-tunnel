@@ -558,6 +558,25 @@ func TestQueryDoHRejectsOversizedResponse(t *testing.T) {
 	}
 }
 
+func TestParseDNSResponseRejectsInvalidStatus(t *testing.T) {
+	seed, err := dnsHTTPSResponseSeed([]byte("ech"))
+	if err != nil {
+		t.Fatalf("build DNS response seed: %v", err)
+	}
+
+	queryLike := append([]byte(nil), seed...)
+	queryLike[2] &^= 0x80
+	if _, err := parseDNSResponse(queryLike); err == nil || !strings.Contains(err.Error(), "不是响应") {
+		t.Fatalf("parseDNSResponse query-like err = %v", err)
+	}
+
+	nxdomain := append([]byte(nil), seed...)
+	nxdomain[3] = nxdomain[3]&0xF0 | 3
+	if _, err := parseDNSResponse(nxdomain); err == nil || !strings.Contains(err.Error(), "DNS 响应错误码") {
+		t.Fatalf("parseDNSResponse rcode err = %v", err)
+	}
+}
+
 func TestQueryDNSUDPReturnsECH(t *testing.T) {
 	oldCfg := cfg
 	defer func() { cfg = oldCfg }()
@@ -5497,6 +5516,7 @@ func dnsHTTPSResponseSeed(ech []byte) ([]byte, error) {
 		return nil, err
 	}
 	response := append([]byte(nil), query...)
+	response[2], response[3] = 0x81, 0x80
 	response[6], response[7] = 0, 1
 	rdata := []byte{0, 1, 0, 0, 5, byte(len(ech) >> 8), byte(len(ech))}
 	rdata = append(rdata, ech...)

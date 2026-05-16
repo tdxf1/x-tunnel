@@ -2212,6 +2212,12 @@ func parseDNSResponse(response []byte) (string, error) {
 	if len(response) < 12 {
 		return "", fmt.Errorf("响应过短")
 	}
+	if response[2]&0x80 == 0 {
+		return "", fmt.Errorf("DNS 消息不是响应")
+	}
+	if rcode := response[3] & 0x0F; rcode != 0 {
+		return "", fmt.Errorf("DNS 响应错误码: %d", rcode)
+	}
 	ancount := binary.BigEndian.Uint16(response[6:8])
 	if ancount == 0 {
 		return "", fmt.Errorf("无答案记录")
