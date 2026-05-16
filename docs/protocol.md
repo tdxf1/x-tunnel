@@ -151,6 +151,7 @@ Capability flags:
 Current client behavior:
 
 - Requires negotiated TCP and Ping capabilities.
+- Advertises UDP, IPStrategy, and TCPStatus support. TCPStatus changes the TCP stream handshake when both peers negotiate it; UDP and IPStrategy are currently declared capabilities for compatibility visibility rather than per-stream gates.
 - Treats EOF, unexpected EOF, or timeout while waiting for hello as legacy server behavior.
 - Fails the channel cleanly on explicit rejection or insufficient capabilities.
 
@@ -174,6 +175,13 @@ Status values:
 | `1` | Error | Target policy or remote TCP dial failed. The message is diagnostic text and the stream closes. |
 
 New clients wait for this status before returning local SOCKS5 or HTTP CONNECT success. Legacy channels do not wait for a status frame and keep the older best-effort behavior.
+
+Local failure mapping with TCPStatus:
+
+- SOCKS5 CONNECT returns a non-success SOCKS5 reply when the remote server rejects the target or cannot dial it.
+- HTTP proxy and CONNECT requests return `502 Bad Gateway` after a remote target-policy or dial failure.
+- TCP forward listeners close the local connection when the remote open status is an error.
+- Malformed TCP stream targets are rejected before target-policy checks and use the same TCPStatus error path when available.
 
 ## 7. Ping Stream
 
@@ -238,7 +246,17 @@ Current behavior:
 - IPv6 targets are formatted as `[host]:port` after parsing.
 - UDP destination ports listed in `-block` are silently dropped.
 
-## 10. Current Risk Map
+## 10. Local HTTP Proxy Behavior
+
+The local HTTP listener accepts three proxy forms:
+
+- `CONNECT host:port HTTP/1.1` for HTTPS or other TCP tunnels. A missing port defaults to `443`.
+- Absolute-form HTTP requests such as `GET http://host[:port]/path HTTP/1.1`. A missing port defaults to `80`.
+- Origin-form requests such as `GET /path HTTP/1.1` with a valid `Host` header. A missing port defaults to `80`.
+
+Non-CONNECT absolute-form requests are accepted only with the `http` scheme. Absolute-form `https://`, `ftp://`, URL userinfo, malformed authorities, and mismatched `Host` versus URL authorities are rejected with `400 Bad Request` before any smux stream opens. `Proxy-Authorization` is consumed locally and removed before forwarding ordinary HTTP requests.
+
+## 11. Current Risk Map
 
 ### Compatibility Risks
 
@@ -263,7 +281,7 @@ Current behavior:
 - The project has unit coverage for protocol helpers and automated local integration coverage, but broader load, failure-injection, and cross-platform tests are still future work.
 - Protocol encoders/decoders are extracted into `protocol.go`; SOCKS5 parsing remains in the main file.
 
-## 11. Evolution Rules
+## 12. Evolution Rules
 
 - Do not change existing wire bytes until unit tests cover current encoders/decoders.
 - Add negotiation before introducing incompatible stream framing.

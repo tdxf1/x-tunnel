@@ -1013,3 +1013,17 @@ Verification:
 - `go test -count=1 ./...`: pass.
 - `go test -cover -count=1 ./...`: pass, `coverage: 46.6% of statements`.
 - `go test -race -count=1 ./...`: pass.
+
+Post Phase 8 HTTP/TCPStatus documentation alignment:
+
+- [x] Document supported HTTP proxy request forms and rejected absolute-form schemes.
+- [x] Clarify TCPStatus local client failure mapping for target policy and dial failures.
+- [x] Keep protocol capability wording aligned with implementation behavior.
+- [x] Run focused documentation-relevant tests and full test verification before commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'Test(HTTPProxyTarget|HandleHTTPRejectsUnsupportedAbsoluteFormScheme|HandleSmuxStreamRejectsMalformedTCPTargetWithStatus|IntegrationTCPStatusRejectsBlockedTarget)' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 46.6% of statements`.

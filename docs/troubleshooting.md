@@ -46,11 +46,13 @@ Checks:
 Symptoms:
 
 - Server logs `TCP 拒绝` or `UDP 拒绝`.
-- Client side may see an empty reply or closed stream.
+- New clients with negotiated TCPStatus map TCP target failures to local SOCKS5 failure replies, HTTP `502 Bad Gateway`, or a closed TCP-forward connection.
+- Legacy channels may still show an empty reply or closed stream.
 
 Checks:
 
 - Review server `-allow-target`, `-deny-target`, `-allow-host`, and `-deny-host`.
+- Confirm the requested target is a valid `host:port` authority with no whitespace and a port in `1-65535`.
 - `-deny-target` wins before `-allow-target` for IP targets; `-deny-host` wins before `-allow-host` for domain targets.
 - Domain targets are rejected when CIDR allow rules exist without a matching `-allow-host`.
 - If `-metrics` is enabled, check `x_tunnel_server_target_rejections_total`.
