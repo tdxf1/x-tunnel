@@ -1501,3 +1501,44 @@ Review:
 
 - `docs/protocol.md` now links the SOCKS5, username/password auth, and HTTP semantics RFCs used as external protocol baselines.
 - The local proxy sections now separate standards-derived parsing from x-tunnel-specific target validation and policy checks.
+
+Post Phase 8 ClientSession channel lifecycle tests:
+
+- [x] Add a lightweight fake `*websocket.Conn` helper for channel lifecycle tests.
+- [x] Cover `addChannel` auto IDs, preferred IDs, and replacement closing the old channel.
+- [x] Cover `removeChannel` ignoring stale channel pointers and cleaning `serverSessions` when the last current channel is removed.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'TestClientSession(ChannelLifecycle|StreamLimitAccounting|LimitAllowsExistingClient)' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 57.0% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- Client session channel lifecycle now has unit coverage for auto IDs, preferred IDs, replacement close behavior, stale remove protection, and final session cleanup.
+- The test uses real websocket connections from the existing adapter helper, avoiding unsafe fake `*websocket.Conn` construction.
+
+Post Phase 8 benchmark coverage refresh:
+
+- [x] Add microbenchmarks for SOCKS5 UDP packet round-trips, HTTP proxy header stripping, and counted full writes.
+- [x] Run a short benchmark pass plus full/coverage/race verification.
+- [x] Record benchmark evidence and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run '^$' -bench 'Benchmark(SOCKS5UDPPacketRoundTrip|StripHTTPProxyHeaders|WriteAllCount)' -benchtime=100ms ./...`: pass.
+  - `BenchmarkSOCKS5UDPPacketRoundTrip-8`: `245.4 ns/op`.
+  - `BenchmarkStripHTTPProxyHeaders-8`: `459.4 ns/op`.
+  - `BenchmarkWriteAllCount-8`: `2.962 ns/op`.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 57.0% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- Benchmark coverage now includes today's SOCKS5 UDP packet, HTTP header cleanup, and counted full-write paths.

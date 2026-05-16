@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"io"
+	"net/http"
 	"testing"
 )
 
@@ -83,6 +85,47 @@ func BenchmarkBuildDNSQuery(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		if _, err := buildDNSQuery("example.com", typeHTTPS); err != nil {
 			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkSOCKS5UDPPacketRoundTrip(b *testing.B) {
+	payload := bytes.Repeat([]byte("x"), 1200)
+	for i := 0; i < b.N; i++ {
+		packet, err := buildSOCKS5UDPPacket("127.0.0.1", 5353, payload)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if _, _, err := parseSOCKS5UDPPacket(packet); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStripHTTPProxyHeaders(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		h := http.Header{}
+		h.Set("Proxy-Authorization", "Basic secret")
+		h.Set("Proxy-Connection", "keep-alive")
+		h.Set("Connection", "X-Hop")
+		h.Set("X-Hop", "drop")
+		h.Set("X-End-To-End", "keep")
+		stripHTTPProxyHeaders(h)
+		if h.Get("X-End-To-End") == "" {
+			b.Fatal("end-to-end header was stripped")
+		}
+	}
+}
+
+func BenchmarkWriteAllCount(b *testing.B) {
+	payload := bytes.Repeat([]byte("x"), 1400)
+	for i := 0; i < b.N; i++ {
+		n, err := writeAllCount(io.Discard, payload)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if n != len(payload) {
+			b.Fatalf("writeAllCount wrote %d bytes, want %d", n, len(payload))
 		}
 	}
 }

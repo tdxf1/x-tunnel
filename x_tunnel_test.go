@@ -635,6 +635,71 @@ func TestClientSessionLimitAllowsExistingClient(t *testing.T) {
 	}
 }
 
+func newChannelTestWebSocket(t *testing.T) *websocket.Conn {
+	t.Helper()
+	client, server := newTestWSNetConnPair(t)
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = server.Close()
+	})
+	return server.ws
+}
+
+func TestClientSessionChannelLifecycle(t *testing.T) {
+	serverSessionsMu.Lock()
+	serverSessions.Delete("channel-lifecycle-test")
+	serverSessionsMu.Unlock()
+
+	session := &ClientSession{clientID: "channel-lifecycle-test", channels: make(map[uint64]*WSChannel)}
+	serverSessions.Store(session.clientID, session)
+	t.Cleanup(func() {
+		serverSessionsMu.Lock()
+		serverSessions.Delete(session.clientID)
+		serverSessionsMu.Unlock()
+	})
+
+	first := session.addChannel(newChannelTestWebSocket(t), 0)
+	if first.id != 1 {
+		t.Fatalf("first channel id = %d, want 1", first.id)
+	}
+	preferred := session.addChannel(newChannelTestWebSocket(t), 7)
+	if preferred.id != 7 {
+		t.Fatalf("preferred channel id = %d, want 7", preferred.id)
+	}
+
+	oldPreferredConn := preferred.conn
+	replacement := session.addChannel(newChannelTestWebSocket(t), 7)
+	if replacement.id != 7 {
+		t.Fatalf("replacement channel id = %d, want 7", replacement.id)
+	}
+	_ = oldPreferredConn.SetReadDeadline(time.Now().Add(time.Second))
+	if _, _, err := oldPreferredConn.NextReader(); err == nil {
+		t.Fatal("replaced websocket remained readable, want closed")
+	}
+
+	stale := &WSChannel{id: replacement.id, conn: newChannelTestWebSocket(t), session: session}
+	session.removeChannel(replacement.id, stale)
+	if got := len(session.channels); got != 2 {
+		t.Fatalf("channels after stale remove = %d, want 2", got)
+	}
+
+	session.removeChannel(first.id, first)
+	if got := len(session.channels); got != 1 {
+		t.Fatalf("channels after first remove = %d, want 1", got)
+	}
+	if _, ok := serverSessions.Load(session.clientID); !ok {
+		t.Fatal("server session deleted before last channel was removed")
+	}
+
+	session.removeChannel(replacement.id, replacement)
+	if got := len(session.channels); got != 0 {
+		t.Fatalf("channels after final remove = %d, want 0", got)
+	}
+	if _, ok := serverSessions.Load(session.clientID); ok {
+		t.Fatal("server session remained after final channel remove")
+	}
+}
+
 func TestValidateMTLSConfig(t *testing.T) {
 	oldCert, oldKey := certFile, keyFile
 	oldClientCA, oldClientCert, oldClientKey := clientCAFile, clientCertFile, clientKeyFile
