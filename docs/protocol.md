@@ -102,6 +102,7 @@ Limits:
 
 - `target_len <= 65535`.
 - The current TCP/UDP/Ping stream open header remains unchanged for compatibility.
+- TCP and UDP streams reject `ip_strategy` values outside `0..4` before dialing or opening a relay.
 - Unknown stream kinds are treated as unsupported: the server logs the kind, increments `x_tunnel_server_unsupported_streams_total`, and closes the stream.
 
 ## 5. Protocol Hello Stream

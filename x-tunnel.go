@@ -1044,6 +1044,15 @@ func parseIPStrategyStrict(s string) (byte, error) {
 	}
 }
 
+func validateIPStrategyValue(strategy byte) error {
+	switch strategy {
+	case IPStrategyDefault, IPStrategyIPv4Only, IPStrategyIPv6Only, IPStrategyPv4Pv6, IPStrategyPv6Pv4:
+		return nil
+	default:
+		return fmt.Errorf("IP 策略无效: %d", strategy)
+	}
+}
+
 func validateECHLookupConfig(domain, server string) error {
 	if _, err := buildDNSQuery(domain, typeHTTPS); err != nil {
 		return fmt.Errorf("ech 域名无效: %w", err)
@@ -2761,6 +2770,14 @@ func handleSmuxStream(session *ClientSession, ch *WSChannel, stream *smux.Stream
 	case streamKindTCP:
 		log.Printf("[服务端] 客户ID:%s TCP 打开: %s, 通道:%d", shortID(session.clientID), target, ch.id)
 		sendOpenStatus := atomic.LoadUint32(&ch.capabilities)&protocolCapabilityTCPStatus != 0
+		if err := validateIPStrategyValue(strategy); err != nil {
+			atomic.AddUint64(&serverTargetRejectSeq, 1)
+			log.Printf("[服务端] 客户ID:%s TCP 拒绝: %s, reason=%v, 通道:%d", shortID(session.clientID), target, err, ch.id)
+			if sendOpenStatus {
+				_ = writeTCPOpenStatus(stream, tcpOpenStatusError, err.Error())
+			}
+			return
+		}
 		if err := validateSmuxStreamTarget(target); err != nil {
 			atomic.AddUint64(&serverTargetRejectSeq, 1)
 			log.Printf("[服务端] 客户ID:%s TCP 拒绝: %s, reason=%v, 通道:%d", shortID(session.clientID), target, err, ch.id)
@@ -2800,6 +2817,11 @@ func handleSmuxStream(session *ClientSession, ch *WSChannel, stream *smux.Stream
 		log.Printf("[服务端] 客户ID:%s TCP 关闭: %s, 通道:%d", shortID(session.clientID), target, ch.id)
 	case streamKindUDP:
 		log.Printf("[服务端] 客户ID:%s SOCKS5 UDP 访问: %s, 通道:%d", shortID(session.clientID), target, ch.id)
+		if err := validateIPStrategyValue(strategy); err != nil {
+			atomic.AddUint64(&serverTargetRejectSeq, 1)
+			log.Printf("[服务端] 客户ID:%s UDP 拒绝: %s, reason=%v, 通道:%d", shortID(session.clientID), target, err, ch.id)
+			return
+		}
 		if err := validateSmuxStreamTarget(target); err != nil {
 			atomic.AddUint64(&serverTargetRejectSeq, 1)
 			log.Printf("[服务端] 客户ID:%s UDP 拒绝: %s, reason=%v, 通道:%d", shortID(session.clientID), target, err, ch.id)

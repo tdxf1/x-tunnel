@@ -1139,3 +1139,18 @@ Verification:
 - `go test -run 'TestHandleSOCKS5(RejectsMissingUserPassMethod|RejectsMissingNoAuthMethod|SelectsConfiguredMethod|UserPassAuthRejectsInvalidVersion|UserPassAuthRejectsShortRequest)' -count=1 ./...`: pass.
 - `go test -count=1 ./...`: pass.
 - `go test -cover -count=1 ./...`: pass, `coverage: 47.3% of statements`.
+
+Post Phase 8 smux IP strategy validation:
+
+- [x] Reject TCP smux streams with unknown `ip_strategy` values and return TCPStatus errors when negotiated.
+- [x] Reject UDP smux streams with unknown `ip_strategy` values before relay setup.
+- [x] Document the invalid strategy behavior in the protocol notes.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'Test(ParseIPStrategy|ValidateIPStrategyValue|HandleSmuxStreamRejectsInvalid.*IPStrategy|HandleSmuxStreamRejectsMalformedTCPTargetWithStatus)' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 47.8% of statements`.
+- `go test -race -count=1 ./...`: pass.

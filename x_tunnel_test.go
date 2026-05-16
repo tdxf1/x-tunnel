@@ -69,6 +69,19 @@ func TestParseIPStrategyStrict(t *testing.T) {
 	}
 }
 
+func TestValidateIPStrategyValue(t *testing.T) {
+	for _, strategy := range []byte{IPStrategyDefault, IPStrategyIPv4Only, IPStrategyIPv6Only, IPStrategyPv4Pv6, IPStrategyPv6Pv4} {
+		if err := validateIPStrategyValue(strategy); err != nil {
+			t.Fatalf("validateIPStrategyValue(%d) returned error: %v", strategy, err)
+		}
+	}
+	for _, strategy := range []byte{5, 99, 255} {
+		if err := validateIPStrategyValue(strategy); err == nil {
+			t.Fatalf("validateIPStrategyValue(%d) accepted invalid strategy", strategy)
+		}
+	}
+}
+
 func TestBaseReconnectDelay(t *testing.T) {
 	oldCfg := cfg
 	defer func() { cfg = oldCfg }()
@@ -2090,6 +2103,10 @@ func TestHandleSmuxStreamRejectsUnsupportedKind(t *testing.T) {
 }
 
 func openAcceptedSmuxTestStream(t *testing.T, kind byte) (*smux.Stream, *smux.Stream) {
+	return openAcceptedSmuxTestStreamWithHeader(t, kind, IPStrategyDefault, "")
+}
+
+func openAcceptedSmuxTestStreamWithHeader(t *testing.T, kind, strategy byte, target string) (*smux.Stream, *smux.Stream) {
 	t.Helper()
 
 	serverConn, clientConn := net.Pipe()
@@ -2130,7 +2147,7 @@ func openAcceptedSmuxTestStream(t *testing.T, kind byte) (*smux.Stream, *smux.St
 	if err := clientStream.SetDeadline(time.Now().Add(time.Second)); err != nil {
 		t.Fatalf("set client stream deadline: %v", err)
 	}
-	if err := writeSmuxOpenHeader(clientStream, kind, IPStrategyDefault, ""); err != nil {
+	if err := writeSmuxOpenHeader(clientStream, kind, strategy, target); err != nil {
 		t.Fatalf("write smux open header: %v", err)
 	}
 
@@ -2272,6 +2289,61 @@ func TestHandleSmuxStreamRejectsMalformedTCPTargetWithStatus(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for malformed target handler")
+	}
+	if got := atomic.LoadUint64(&serverTargetRejectSeq); got != 1 {
+		t.Fatalf("serverTargetRejectSeq = %d, want 1", got)
+	}
+}
+
+func TestHandleSmuxStreamRejectsInvalidIPStrategyWithStatus(t *testing.T) {
+	oldTargetRejects := atomic.LoadUint64(&serverTargetRejectSeq)
+	defer atomic.StoreUint64(&serverTargetRejectSeq, oldTargetRejects)
+	atomic.StoreUint64(&serverTargetRejectSeq, 0)
+
+	clientStream, serverStream := openAcceptedSmuxTestStreamWithHeader(t, streamKindTCP, 99, "127.0.0.1:80")
+	done := make(chan struct{})
+	session := &ClientSession{clientID: "invalid-ip-strategy-test", channels: make(map[uint64]*WSChannel)}
+	ch := &WSChannel{id: 1, session: session, capabilities: protocolCapabilityTCPStatus}
+	go func() {
+		defer close(done)
+		handleSmuxStream(session, ch, serverStream)
+	}()
+
+	status, message, err := readTCPOpenStatus(clientStream)
+	if err != nil {
+		t.Fatalf("read TCP open status: %v", err)
+	}
+	if status != tcpOpenStatusError || !strings.Contains(message, "IP 策略无效") {
+		t.Fatalf("TCP open status = %d %q, want IP strategy validation error", status, message)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for invalid TCP IP strategy handler")
+	}
+	if got := atomic.LoadUint64(&serverTargetRejectSeq); got != 1 {
+		t.Fatalf("serverTargetRejectSeq = %d, want 1", got)
+	}
+}
+
+func TestHandleSmuxStreamRejectsInvalidUDPIPStrategy(t *testing.T) {
+	oldTargetRejects := atomic.LoadUint64(&serverTargetRejectSeq)
+	defer atomic.StoreUint64(&serverTargetRejectSeq, oldTargetRejects)
+	atomic.StoreUint64(&serverTargetRejectSeq, 0)
+
+	_, serverStream := openAcceptedSmuxTestStreamWithHeader(t, streamKindUDP, 99, "127.0.0.1:53")
+	done := make(chan struct{})
+	session := &ClientSession{clientID: "invalid-udp-ip-strategy-test", channels: make(map[uint64]*WSChannel)}
+	go func() {
+		defer close(done)
+		handleSmuxStream(session, &WSChannel{id: 1, session: session}, serverStream)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for invalid UDP IP strategy handler")
 	}
 	if got := atomic.LoadUint64(&serverTargetRejectSeq); got != 1 {
 		t.Fatalf("serverTargetRejectSeq = %d, want 1", got)
