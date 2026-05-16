@@ -2570,3 +2570,22 @@ Review:
 
 - DNS transport errors now have direct local coverage for malformed DoH bodies, malformed UDP DNS responses, and UDP DNS timeout behavior.
 - Client protocol negotiation rejects non-OK server status, unsupported protocol versions, and missing required capabilities before using the channel.
+
+Post Phase 8 SOCKS5 UDP wildcard relay host coverage:
+
+- [x] Cover upstream SOCKS5 UDP ASSOCIATE returning `0.0.0.0:port`.
+- [x] Assert the relay address reuses the configured SOCKS5 proxy TCP host instead of the wildcard host.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'TestNewSOCKS5UDPRelay(RejectsInvalidAssociateResponse|AcceptsIPv6AssociateRelay|UsesProxyHostForWildcardAssociateRelay)' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 74.6% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- Upstream SOCKS5 UDP ASSOCIATE wildcard IPv4 relay addresses are now covered.
+- The test proves `newSOCKS5UDPRelay` maps `0.0.0.0` to the configured SOCKS5 proxy TCP host before resolving the UDP relay address.

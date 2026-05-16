@@ -2854,6 +2854,31 @@ func TestNewSOCKS5UDPRelayAcceptsIPv6AssociateRelay(t *testing.T) {
 	}
 }
 
+func TestNewSOCKS5UDPRelayUsesProxyHostForWildcardAssociateRelay(t *testing.T) {
+	const relayPort = 5354
+	response := []byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, byte(relayPort >> 8), byte(relayPort & 0xff)}
+	proxyAddr, waitProxy := startSOCKS5UDPAssociateResponse(t, response)
+	proxyHost, _, err := net.SplitHostPort(proxyAddr)
+	if err != nil {
+		t.Fatalf("split proxy addr: %v", err)
+	}
+
+	oldConfig := socks5Config
+	socks5Config = &SOCKS5Config{Host: proxyAddr}
+	t.Cleanup(func() { socks5Config = oldConfig })
+
+	relay, err := newSOCKS5UDPRelay("127.0.0.1:53")
+	if err != nil {
+		t.Fatalf("newSOCKS5UDPRelay returned error: %v", err)
+	}
+	defer relay.Close()
+	waitProxy()
+
+	if relay.relayAddr == nil || !relay.relayAddr.IP.Equal(net.ParseIP(proxyHost)) || relay.relayAddr.Port != relayPort {
+		t.Fatalf("relay addr = %#v, want %s:%d", relay.relayAddr, proxyHost, relayPort)
+	}
+}
+
 func TestDirectUDPRelayerRoundTrip(t *testing.T) {
 	targetConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
