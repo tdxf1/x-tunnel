@@ -1866,3 +1866,23 @@ Review:
 
 - TLS helper tests now cover valid PEM CA loading, invalid PEM rejection, client certificate loading, server-side mTLS client CA configuration, and generated self-signed certificates.
 - Unified TLS config coverage now proves missing ECH fails closed, ECH config is propagated when present, and fallback preserves standard TLS behavior.
+
+Post Phase 8 TCP dial strategy coverage:
+
+- [x] Cover literal IPv4 targets dialing successfully regardless of a conflicting IP strategy.
+- [x] Cover localhost IPv4-only dialing against a real loopback TCP listener.
+- [x] Cover localhost IPv6-only dialing when the host exposes IPv6 loopback.
+- [x] Run focused/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'TestDialTCPWithStrategy(LiteralIPIgnoresStrategy|LocalhostFamilies)|TestResolveUDPWithStrategy(LiteralIPs|LocalhostFamilies)' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 63.8% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Review:
+
+- TCP dial strategy now has loopback coverage matching the UDP strategy coverage already added.
+- Literal IP TCP targets bypass DNS strategy selection, while localhost strategy paths are proven against real IPv4 and available IPv6 listeners.

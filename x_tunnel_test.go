@@ -1718,12 +1718,98 @@ func TestDialViaSocks5AuthProxy(t *testing.T) {
 	}
 }
 
+func TestDialTCPWithStrategyLiteralIP(t *testing.T) {
+	oldCfg := cfg
+	t.Cleanup(func() { cfg = oldCfg })
+	cfg.DialTimeout = time.Second
+
+	targetAddr := startOneShotTCPEcho(t)
+	conn, err := dialTCPWithStrategy(targetAddr, IPStrategyIPv6Only)
+	if err != nil {
+		t.Fatalf("dialTCPWithStrategy literal IPv4 returned error: %v", err)
+	}
+	assertTCPEcho(t, conn, "literal-ip")
+}
+
+func TestDialTCPWithStrategyLocalhostFamilies(t *testing.T) {
+	oldCfg := cfg
+	t.Cleanup(func() { cfg = oldCfg })
+	cfg.DialTimeout = time.Second
+
+	covered := false
+	if localhostHasFamily(t, false) {
+		v4Addr := startOneShotTCPEchoOn(t, "tcp4", "127.0.0.1:0")
+		_, v4Port, err := net.SplitHostPort(v4Addr)
+		if err != nil {
+			t.Fatalf("split IPv4 listener address: %v", err)
+		}
+		conn, err := dialTCPWithStrategy(net.JoinHostPort("localhost", v4Port), IPStrategyIPv4Only)
+		if err != nil {
+			t.Fatalf("dialTCPWithStrategy IPv4-only localhost returned error: %v", err)
+		}
+		assertTCPEcho(t, conn, "localhost-v4")
+		covered = true
+	}
+
+	if localhostHasFamily(t, true) {
+		v6Ln, err := net.Listen("tcp6", "[::1]:0")
+		if err != nil {
+			t.Logf("IPv6 loopback listener unavailable: %v", err)
+		} else {
+			v6Addr := startOneShotTCPEchoWithListener(t, v6Ln)
+			_, v6Port, err := net.SplitHostPort(v6Addr)
+			if err != nil {
+				t.Fatalf("split IPv6 listener address: %v", err)
+			}
+			conn, err := dialTCPWithStrategy(net.JoinHostPort("localhost", v6Port), IPStrategyIPv6Only)
+			if err != nil {
+				t.Fatalf("dialTCPWithStrategy IPv6-only localhost returned error: %v", err)
+			}
+			assertTCPEcho(t, conn, "localhost-v6")
+			covered = true
+		}
+	}
+
+	if !covered {
+		t.Skip("localhost has no usable loopback TCP family")
+	}
+}
+
+func localhostHasFamily(t *testing.T, ipv6 bool) bool {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, "localhost")
+	if err != nil {
+		t.Skipf("localhost resolution unavailable: %v", err)
+	}
+	for _, ip := range ips {
+		if ipv6 && ip.IP.To4() == nil && ip.IP.To16() != nil {
+			return true
+		}
+		if !ipv6 && ip.IP.To4() != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func startOneShotTCPEcho(t *testing.T) string {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	return startOneShotTCPEchoOn(t, "tcp", "127.0.0.1:0")
+}
+
+func startOneShotTCPEchoOn(t *testing.T, network, address string) string {
+	t.Helper()
+	ln, err := net.Listen(network, address)
 	if err != nil {
 		t.Fatalf("listen TCP echo: %v", err)
 	}
+	return startOneShotTCPEchoWithListener(t, ln)
+}
+
+func startOneShotTCPEchoWithListener(t *testing.T, ln net.Listener) string {
+	t.Helper()
 	t.Cleanup(func() { _ = ln.Close() })
 	done := make(chan error, 1)
 	go func() {
@@ -1754,6 +1840,24 @@ func startOneShotTCPEcho(t *testing.T) string {
 		}
 	})
 	return ln.Addr().String()
+}
+
+func assertTCPEcho(t *testing.T, conn net.Conn, message string) {
+	t.Helper()
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set TCP echo conn deadline: %v", err)
+	}
+	if _, err := conn.Write([]byte(message)); err != nil {
+		t.Fatalf("write TCP echo payload: %v", err)
+	}
+	reply := make([]byte, len("echo:")+len(message))
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		t.Fatalf("read TCP echo reply: %v", err)
+	}
+	if string(reply) != "echo:"+message {
+		t.Fatalf("TCP echo reply = %q, want %q", reply, "echo:"+message)
+	}
 }
 
 func TestSocks5HandshakeWithAuthOffersOnlyUserPass(t *testing.T) {
