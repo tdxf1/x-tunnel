@@ -1230,3 +1230,32 @@ Verification:
 - `go test -count=1 ./...`: pass.
 - `go test -cover -count=1 ./...`: pass, `coverage: 51.0% of statements`.
 - `go test -race -count=1 ./...`: pass.
+
+Post Phase 8 integration binary reuse:
+
+- [x] Build the x-tunnel integration test binary once per test process.
+- [x] Reuse the binary across integration tests instead of rebuilding per case.
+- [x] Clean the shared integration build directory from `TestMain`.
+- [x] Run focused integration/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'Test(LocalTunnelIntegration|IntegrationLocalProxyAuth|IntegrationLocalWSSFallback|IntegrationLocalWSSMTLS|IntegrationMaxClientsRejectsNewClient|IntegrationTCPStatusRejectsBlockedTarget|IntegrationStartupValidationFailures)$' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 51.0% of statements`.
+- `go test -race -count=1 ./...`: pass.
+
+Post Phase 8 integration log wait diagnostics:
+
+- [x] Let `waitLogContains` fail fast when a watched x-tunnel process exits before the expected log appears.
+- [x] Pass watched processes to key client/server log waits.
+- [x] Run focused integration/full/coverage/race verification and commit.
+
+Verification:
+
+- `git diff --check`: pass.
+- `go test -run 'Test(LocalTunnelIntegration|IntegrationLocalProxyAuth|IntegrationUpstreamSOCKS5Auth|IntegrationLocalWSSMTLS|IntegrationMaxClientsRejectsNewClient|IntegrationTCPStatusRejectsBlockedTarget)$' -count=1 ./...`: pass.
+- `go test -count=1 ./...`: pass.
+- `go test -cover -count=1 ./...`: pass, `coverage: 51.0% of statements`.
+- `go test -race -count=1 ./...`: pass.

@@ -22,11 +22,45 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 const integrationIOTimeout = 5 * time.Second
+
+var (
+	integrationBuildOnce   sync.Once
+	integrationBuildDir    string
+	integrationBuildPath   string
+	integrationBuildOutput []byte
+	integrationBuildErr    error
+)
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if integrationBuildDir != "" {
+		_ = os.RemoveAll(integrationBuildDir)
+	}
+	os.Exit(code)
+}
+
+func buildIntegrationBinary(t *testing.T, ctx context.Context) string {
+	t.Helper()
+	integrationBuildOnce.Do(func() {
+		integrationBuildDir, integrationBuildErr = os.MkdirTemp("", "x-tunnel-integration-")
+		if integrationBuildErr != nil {
+			return
+		}
+		integrationBuildPath = filepath.Join(integrationBuildDir, "x-tunnel")
+		build := exec.CommandContext(ctx, "go", "build", "-o", integrationBuildPath, ".")
+		integrationBuildOutput, integrationBuildErr = build.CombinedOutput()
+	})
+	if integrationBuildErr != nil {
+		t.Fatalf("go build failed: %v\n%s", integrationBuildErr, integrationBuildOutput)
+	}
+	return integrationBuildPath
+}
 
 func TestLocalTunnelIntegration(t *testing.T) {
 	if testing.Short() {
@@ -48,11 +82,7 @@ func TestLocalTunnelIntegration(t *testing.T) {
 	}
 	localhostTargetAddr := net.JoinHostPort("localhost", targetPort)
 
-	binPath := filepath.Join(t.TempDir(), "x-tunnel")
-	build := exec.CommandContext(ctx, "go", "build", "-o", binPath, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build failed: %v\n%s", err, out)
-	}
+	binPath := buildIntegrationBinary(t, ctx)
 
 	wsAddr := freeTCPAddr(t)
 	socksAddr := freeTCPAddr(t)
@@ -89,8 +119,8 @@ func TestLocalTunnelIntegration(t *testing.T) {
 	waitTCP(t, ctx, tcpAddr, client)
 	waitTCP(t, ctx, httpProxyAddr, client)
 	waitTCP(t, ctx, clientMetricsAddr, client)
-	waitLogContains(t, ctx, clientLog, "协议协商成功")
-	waitLogContains(t, ctx, serverLog, "协议协商成功")
+	waitLogContains(t, ctx, clientLog, "协议协商成功", client)
+	waitLogContains(t, ctx, serverLog, "协议协商成功", server)
 
 	assertBody(t, "tcp forward", fetchHTTP(t, "http://"+tcpAddr+"/payload"), body)
 	assertBody(t, "http proxy", fetchViaHTTPProxy(t, httpProxyAddr, "http://"+targetAddr+"/payload"), body)
@@ -113,8 +143,8 @@ func TestLocalTunnelIntegration(t *testing.T) {
 		"-n", "1",
 	)
 	defer stopProcess(badClient)
-	waitLogContains(t, ctx, badClientLog, "认证失败")
-	waitLogContains(t, ctx, serverLog, "Token 认证失败")
+	waitLogContains(t, ctx, badClientLog, "认证失败", badClient)
+	waitLogContains(t, ctx, serverLog, "Token 认证失败", server)
 	assertMetricValue(t, fetchHTTP(t, "http://"+metricsAddr+"/metrics"), "x_tunnel_server_auth_rejections_total", "1")
 }
 
@@ -137,11 +167,7 @@ func TestIntegrationLocalProxyAuth(t *testing.T) {
 	defer origin.Close()
 	targetAddr := strings.TrimPrefix(origin.URL, "http://")
 
-	binPath := filepath.Join(t.TempDir(), "x-tunnel")
-	build := exec.CommandContext(ctx, "go", "build", "-o", binPath, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build failed: %v\n%s", err, out)
-	}
+	binPath := buildIntegrationBinary(t, ctx)
 
 	wsAddr := freeTCPAddr(t)
 	socksAddr := freeTCPAddr(t)
@@ -167,8 +193,8 @@ func TestIntegrationLocalProxyAuth(t *testing.T) {
 	defer stopProcess(client)
 	waitTCP(t, ctx, socksAddr, client)
 	waitTCP(t, ctx, httpProxyAddr, client)
-	waitLogContains(t, ctx, clientLog, "协议协商成功")
-	waitLogContains(t, ctx, serverLog, "协议协商成功")
+	waitLogContains(t, ctx, clientLog, "协议协商成功", client)
+	waitLogContains(t, ctx, serverLog, "协议协商成功", server)
 
 	if got := fetchViaHTTPProxyStatus(t, httpProxyAddr, "http://"+targetAddr+"/payload"); got != http.StatusProxyAuthRequired {
 		t.Fatalf("HTTP proxy status without auth = %d, want %d", got, http.StatusProxyAuthRequired)
@@ -215,11 +241,7 @@ func TestIntegrationUpstreamSOCKS5Auth(t *testing.T) {
 	targetAddr := strings.TrimPrefix(origin.URL, "http://")
 	upstreamAddr := startAuthSOCKS5TCPProxy(t, "upuser", "uppass")
 
-	binPath := filepath.Join(t.TempDir(), "x-tunnel")
-	build := exec.CommandContext(ctx, "go", "build", "-o", binPath, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build failed: %v\n%s", err, out)
-	}
+	binPath := buildIntegrationBinary(t, ctx)
 
 	okWSAddr := freeTCPAddr(t)
 	okHTTPProxyAddr := freeTCPAddr(t)
@@ -244,7 +266,7 @@ func TestIntegrationUpstreamSOCKS5Auth(t *testing.T) {
 	)
 	defer stopProcess(okClient)
 	waitTCP(t, ctx, okHTTPProxyAddr, okClient)
-	waitLogContains(t, ctx, okClientLog, "协议协商成功")
+	waitLogContains(t, ctx, okClientLog, "协议协商成功", okClient)
 	assertBody(t, "upstream socks auth", fetchViaHTTPProxy(t, okHTTPProxyAddr, "http://"+targetAddr+"/payload"), body)
 
 	badWSAddr := freeTCPAddr(t)
@@ -270,11 +292,11 @@ func TestIntegrationUpstreamSOCKS5Auth(t *testing.T) {
 	)
 	defer stopProcess(badClient)
 	waitTCP(t, ctx, badHTTPProxyAddr, badClient)
-	waitLogContains(t, ctx, badClientLog, "协议协商成功")
+	waitLogContains(t, ctx, badClientLog, "协议协商成功", badClient)
 	if got := fetchViaHTTPProxyStatus(t, badHTTPProxyAddr, "http://"+targetAddr+"/payload"); got != http.StatusBadGateway {
 		t.Fatalf("HTTP proxy status with bad upstream SOCKS5 auth = %d, want %d", got, http.StatusBadGateway)
 	}
-	waitLogContains(t, ctx, badServerLog, "SOCKS5握手失败")
+	waitLogContains(t, ctx, badServerLog, "SOCKS5握手失败", badServer)
 }
 
 func TestIntegrationLocalWSSFallback(t *testing.T) {
@@ -292,11 +314,7 @@ func TestIntegrationLocalWSSFallback(t *testing.T) {
 	defer origin.Close()
 	targetAddr := strings.TrimPrefix(origin.URL, "http://")
 
-	binPath := filepath.Join(t.TempDir(), "x-tunnel")
-	build := exec.CommandContext(ctx, "go", "build", "-o", binPath, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build failed: %v\n%s", err, out)
-	}
+	binPath := buildIntegrationBinary(t, ctx)
 
 	wssAddr := freeTCPAddr(t)
 	tcpAddr := freeTCPAddr(t)
@@ -321,9 +339,9 @@ func TestIntegrationLocalWSSFallback(t *testing.T) {
 	)
 	defer stopProcess(client)
 	waitTCP(t, ctx, tcpAddr, client)
-	waitLogContains(t, ctx, clientLog, "fallback 模式已启用")
-	waitLogContains(t, ctx, clientLog, "协议协商成功")
-	waitLogContains(t, ctx, serverLog, "协议协商成功")
+	waitLogContains(t, ctx, clientLog, "fallback 模式已启用", client)
+	waitLogContains(t, ctx, clientLog, "协议协商成功", client)
+	waitLogContains(t, ctx, serverLog, "协议协商成功", server)
 
 	assertBody(t, "wss tcp forward", fetchHTTP(t, "http://"+tcpAddr+"/payload"), body)
 }
@@ -343,11 +361,7 @@ func TestIntegrationLocalWSSMTLS(t *testing.T) {
 	defer origin.Close()
 	targetAddr := strings.TrimPrefix(origin.URL, "http://")
 
-	binPath := filepath.Join(t.TempDir(), "x-tunnel")
-	build := exec.CommandContext(ctx, "go", "build", "-o", binPath, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build failed: %v\n%s", err, out)
-	}
+	binPath := buildIntegrationBinary(t, ctx)
 	caPath, clientCertPath, clientKeyPath := writeClientMTLSFiles(t)
 
 	wssAddr := freeTCPAddr(t)
@@ -365,7 +379,7 @@ func TestIntegrationLocalWSSMTLS(t *testing.T) {
 	)
 	defer stopProcess(server)
 	waitTCP(t, ctx, wssAddr, server)
-	waitLogContains(t, ctx, serverLog, "mTLS 客户端证书认证已启用")
+	waitLogContains(t, ctx, serverLog, "mTLS 客户端证书认证已启用", server)
 
 	badClient := startXTunnel(t, ctx, binPath, badClientLog,
 		"-l", "tcp://"+freeTCPAddr(t)+"/"+targetAddr,
@@ -375,7 +389,7 @@ func TestIntegrationLocalWSSMTLS(t *testing.T) {
 		"-insecure",
 	)
 	defer stopProcess(badClient)
-	waitLogContains(t, ctx, badClientLog, "连接失败")
+	waitLogContains(t, ctx, badClientLog, "连接失败", badClient)
 
 	client := startXTunnel(t, ctx, binPath, clientLog,
 		"-l", "tcp://"+tcpAddr+"/"+targetAddr,
@@ -388,8 +402,8 @@ func TestIntegrationLocalWSSMTLS(t *testing.T) {
 	)
 	defer stopProcess(client)
 	waitTCP(t, ctx, tcpAddr, client)
-	waitLogContains(t, ctx, clientLog, "协议协商成功")
-	waitLogContains(t, ctx, serverLog, "协议协商成功")
+	waitLogContains(t, ctx, clientLog, "协议协商成功", client)
+	waitLogContains(t, ctx, serverLog, "协议协商成功", server)
 
 	assertBody(t, "wss mtls tcp forward", fetchHTTP(t, "http://"+tcpAddr+"/payload"), body)
 }
@@ -409,11 +423,7 @@ func TestIntegrationMaxClientsRejectsNewClient(t *testing.T) {
 	defer origin.Close()
 	targetAddr := strings.TrimPrefix(origin.URL, "http://")
 
-	binPath := filepath.Join(t.TempDir(), "x-tunnel")
-	build := exec.CommandContext(ctx, "go", "build", "-o", binPath, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build failed: %v\n%s", err, out)
-	}
+	binPath := buildIntegrationBinary(t, ctx)
 
 	wsAddr := freeTCPAddr(t)
 	metricsAddr := freeTCPAddr(t)
@@ -442,7 +452,7 @@ func TestIntegrationMaxClientsRejectsNewClient(t *testing.T) {
 	)
 	defer stopProcess(firstClient)
 	waitTCP(t, ctx, firstSocksAddr, firstClient)
-	waitLogContains(t, ctx, firstClientLog, "协议协商成功")
+	waitLogContains(t, ctx, firstClientLog, "协议协商成功", firstClient)
 
 	secondClient := startXTunnel(t, ctx, binPath, secondClientLog,
 		"-l", "socks5://"+secondSocksAddr,
@@ -452,8 +462,8 @@ func TestIntegrationMaxClientsRejectsNewClient(t *testing.T) {
 	)
 	defer stopProcess(secondClient)
 	waitTCP(t, ctx, secondSocksAddr, secondClient)
-	waitLogContains(t, ctx, serverLog, "拒绝客户端会话")
-	waitLogContains(t, ctx, secondClientLog, "协议协商失败")
+	waitLogContains(t, ctx, serverLog, "拒绝客户端会话", server)
+	waitLogContains(t, ctx, secondClientLog, "协议协商失败", secondClient)
 	assertMetricValue(t, fetchHTTP(t, "http://"+metricsAddr+"/metrics"), "x_tunnel_server_client_session_rejections_total", "1")
 	assertBody(t, "first client after max-clients rejection", fetchViaSOCKS5(t, firstSocksAddr, targetAddr, "/payload"), body)
 }
@@ -466,11 +476,7 @@ func TestIntegrationSourceCIDRRejectionMetrics(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	binPath := filepath.Join(t.TempDir(), "x-tunnel")
-	build := exec.CommandContext(ctx, "go", "build", "-o", binPath, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build failed: %v\n%s", err, out)
-	}
+	binPath := buildIntegrationBinary(t, ctx)
 
 	wsAddr := freeTCPAddr(t)
 	metricsAddr := freeTCPAddr(t)
@@ -500,11 +506,7 @@ func TestIntegrationStartupValidationFailures(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	binPath := filepath.Join(t.TempDir(), "x-tunnel")
-	build := exec.CommandContext(ctx, "go", "build", "-o", binPath, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build failed: %v\n%s", err, out)
-	}
+	binPath := buildIntegrationBinary(t, ctx)
 
 	longCredential := strings.Repeat("u", 256)
 	tests := []struct {
@@ -556,11 +558,7 @@ func TestIntegrationTCPStatusRejectsBlockedTarget(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	binPath := filepath.Join(t.TempDir(), "x-tunnel")
-	build := exec.CommandContext(ctx, "go", "build", "-o", binPath, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build failed: %v\n%s", err, out)
-	}
+	binPath := buildIntegrationBinary(t, ctx)
 
 	wsAddr := freeTCPAddr(t)
 	socksAddr := freeTCPAddr(t)
@@ -589,7 +587,7 @@ func TestIntegrationTCPStatusRejectsBlockedTarget(t *testing.T) {
 	defer stopProcess(client)
 	waitTCP(t, ctx, socksAddr, client)
 	waitTCP(t, ctx, httpProxyAddr, client)
-	waitLogContains(t, ctx, clientLog, "协议协商成功")
+	waitLogContains(t, ctx, clientLog, "协议协商成功", client)
 
 	if got := socks5ConnectReplyCode(t, socksAddr, "127.0.0.1:1"); got == 0x00 {
 		t.Fatal("SOCKS5 connect unexpectedly succeeded for blocked target")
@@ -598,7 +596,7 @@ func TestIntegrationTCPStatusRejectsBlockedTarget(t *testing.T) {
 	if got := fetchViaHTTPProxyStatus(t, httpProxyAddr, "http://127.0.0.1:1/blocked"); got != http.StatusBadGateway {
 		t.Fatalf("HTTP proxy blocked target status = %d, want %d", got, http.StatusBadGateway)
 	}
-	waitLogContains(t, ctx, serverLog, "TCP 拒绝")
+	waitLogContains(t, ctx, serverLog, "TCP 拒绝", server)
 	assertMetricValue(t, fetchHTTP(t, "http://"+metricsAddr+"/metrics"), "x_tunnel_server_target_rejections_total", "2")
 }
 
@@ -699,7 +697,7 @@ func waitTCP(t *testing.T, ctx context.Context, addr string, procs ...*xtunnelPr
 	}
 }
 
-func waitLogContains(t *testing.T, ctx context.Context, path, needle string) {
+func waitLogContains(t *testing.T, ctx context.Context, path, needle string, procs ...*xtunnelProcess) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -709,6 +707,14 @@ func waitLogContains(t *testing.T, ctx context.Context, path, needle string) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("log %s did not contain %q\n%s", path, needle, raw)
+		}
+		for _, proc := range procs {
+			select {
+			case <-proc.done:
+				procLog, _ := os.ReadFile(proc.logPath)
+				t.Fatalf("x-tunnel exited while waiting for log %s to contain %q: %v\nlog %s:\n%s", path, needle, proc.err, proc.logPath, procLog)
+			default:
+			}
 		}
 		select {
 		case <-ctx.Done():
