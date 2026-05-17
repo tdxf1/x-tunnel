@@ -158,6 +158,106 @@ func TestLocalTunnelIntegration(t *testing.T) {
 	assertMetricValue(t, fetchHTTP(t, "http://"+metricsAddr+"/metrics"), "x_tunnel_server_auth_rejections_total", "1")
 }
 
+func TestLocalTunnelWithWebSocketFrontProxyIntegration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	const body = "x-tunnel front proxy integration payload\n"
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer origin.Close()
+	targetAddr := strings.TrimPrefix(origin.URL, "http://")
+
+	binPath := buildIntegrationBinary(t, ctx)
+	wsAddr := freeTCPAddr(t)
+	socksAddr := freeTCPAddr(t)
+	metricsAddr := freeTCPAddr(t)
+
+	serverLog := filepath.Join(t.TempDir(), "front-proxy-server.log")
+	clientLog := filepath.Join(t.TempDir(), "front-proxy-client.log")
+
+	server := startXTunnel(t, ctx, binPath, serverLog,
+		"-l", "ws://"+wsAddr+"/tunnel",
+		"-token", "front-proxy-token",
+		"-cidr", "127.0.0.1/32",
+		"-allow-target", "127.0.0.0/8",
+		"-metrics", metricsAddr,
+	)
+	defer stopProcess(server)
+	waitTCP(t, ctx, wsAddr, server)
+	waitTCP(t, ctx, metricsAddr, server)
+
+	connectRequests := make(chan *http.Request, 1)
+	frontProxyAddr, frontProxyDone := serveSingleHTTPConnectProxy(t, func(conn net.Conn, req *http.Request, reader *bufio.Reader) error {
+		connectRequests <- req
+		return bridgeCONNECTToTarget(conn, req, reader)
+	})
+
+	configPath := filepath.Join(t.TempDir(), "front-proxy-client.json")
+	config := fmt.Sprintf(`{
+  "listen": "socks5://%s",
+  "forward": "ws://%s/tunnel",
+  "token": "front-proxy-token",
+  "connections": 1,
+  "dial_timeout": "1s",
+  "ws_handshake_timeout": "2s",
+  "reconnect_delay": "1s",
+  "reconnect_max_delay": "2s",
+  "reconnect_jitter": "0s",
+  "websocket_front_proxy": {
+    "enabled": true,
+    "type": "http_connect",
+    "server": "%s",
+    "connect_host": "front-proxy.local",
+    "headers": {
+      "X-T5-Auth": "integration-token",
+      "User-Agent": "front-proxy-integration"
+    }
+  }
+}`, socksAddr, wsAddr, frontProxyAddr)
+	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
+		t.Fatalf("write front proxy config: %v", err)
+	}
+
+	client := startXTunnel(t, ctx, binPath, clientLog, "-config", configPath)
+	defer stopProcess(client)
+	waitTCP(t, ctx, socksAddr, client)
+	waitLogContains(t, ctx, clientLog, "WebSocket 前置代理已启用", client)
+	waitLogContains(t, ctx, clientLog, "协议协商成功", client)
+	waitLogContains(t, ctx, serverLog, "v2 客户端通道", server)
+
+	req := <-connectRequests
+	if req.Method != http.MethodConnect {
+		t.Fatalf("front proxy method = %q", req.Method)
+	}
+	if req.RequestURI != wsAddr {
+		t.Fatalf("front proxy CONNECT target = %q, want %q", req.RequestURI, wsAddr)
+	}
+	if got := req.Header.Get("X-T5-Auth"); got != "integration-token" {
+		t.Fatalf("front proxy X-T5-Auth = %q", got)
+	}
+	if got := req.Header.Get("User-Agent"); got != "front-proxy-integration" {
+		t.Fatalf("front proxy User-Agent = %q", got)
+	}
+	assertBody(t, "front proxy socks5", fetchViaSOCKS5(t, socksAddr, targetAddr, "/payload"), body)
+	assertMetricValue(t, fetchHTTP(t, "http://"+metricsAddr+"/metrics"), "x_tunnel_server_protocol_negotiations_total", "1")
+
+	stopProcess(client)
+	select {
+	case err := <-frontProxyDone:
+		if err != nil {
+			t.Fatalf("front proxy bridge failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for front proxy bridge to close")
+	}
+}
+
 func TestIntegrationSimulatedCensorProxyAllowsV2Tunnel(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")

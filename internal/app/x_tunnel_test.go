@@ -368,6 +368,7 @@ func TestLoadConfigFileAppliesUnsetFlags(t *testing.T) {
 	oldAllow, oldDeny := targetAllowCIDRs, targetDenyCIDRs
 	oldAllowHosts, oldDenyHosts := targetAllowHosts, targetDenyHosts
 	oldClientCA, oldClientCert, oldClientKey := clientCAFile, clientCertFile, clientKeyFile
+	oldFrontProxy := websocketFrontProxyConfig
 	defer func() {
 		cfg = oldCfg
 		listenAddr, forwardAddr, token = oldListen, oldForward, oldToken
@@ -377,11 +378,13 @@ func TestLoadConfigFileAppliesUnsetFlags(t *testing.T) {
 		targetAllowCIDRs, targetDenyCIDRs = oldAllow, oldDeny
 		targetAllowHosts, targetDenyHosts = oldAllowHosts, oldDenyHosts
 		clientCAFile, clientCertFile, clientKeyFile = oldClientCA, oldClientCert, oldClientKey
+		websocketFrontProxyConfig = oldFrontProxy
 	}()
 	listenAddr, forwardAddr, token, metricsAddr = "", "", "", ""
 	targetAllowCIDRs, targetDenyCIDRs = "", ""
 	targetAllowHosts, targetDenyHosts = "", ""
 	clientCAFile, clientCertFile, clientKeyFile = "", "", ""
+	websocketFrontProxyConfig = WebSocketFrontProxyConfig{}
 	cfg.DialTimeout = 3 * time.Second
 	cfg.ReconnectJitter = 500 * time.Millisecond
 	connectionNum = 3
@@ -8045,6 +8048,7 @@ func TestExampleConfigFilesLoad(t *testing.T) {
 	oldMaxClients, oldMaxStreams := maxClientSessions, maxStreamsPerClient
 	oldDNS, oldECH, oldIPS := dnsServer, echDomain, ips
 	oldConnections, oldInsecure, oldFallback := connectionNum, insecure, fallback
+	oldFrontProxy := websocketFrontProxyConfig
 	defer func() {
 		cfg = oldCfg
 		listenAddr, forwardAddr, token = oldListen, oldForward, oldToken
@@ -8057,6 +8061,7 @@ func TestExampleConfigFilesLoad(t *testing.T) {
 		maxClientSessions, maxStreamsPerClient = oldMaxClients, oldMaxStreams
 		dnsServer, echDomain, ips = oldDNS, oldECH, oldIPS
 		connectionNum, insecure, fallback = oldConnections, oldInsecure, oldFallback
+		websocketFrontProxyConfig = oldFrontProxy
 	}()
 
 	for _, path := range paths {
@@ -8072,6 +8077,7 @@ func TestExampleConfigFilesLoad(t *testing.T) {
 			maxClientSessions, maxStreamsPerClient = 0, 0
 			dnsServer, echDomain, ips = "https://doh.pub/dns-query", "cloudflare-ech.com", ""
 			connectionNum, insecure, fallback = 3, false, false
+			websocketFrontProxyConfig = WebSocketFrontProxyConfig{}
 
 			if err := loadConfigFile(path, map[string]bool{}); err != nil {
 				t.Fatalf("loadConfigFile(%s) returned error: %v", path, err)

@@ -166,7 +166,7 @@ Metrics include:
 Use `-config` with JSON when command lines get long. Explicit flags override config file values.
 Most keys mirror flag names; `-n` is `connections`, and target filter keys accept either
 hyphen or underscore forms, for example `allow-target` or `allow_target`.
-See [examples](examples) for local, hardened server, and WSS mTLS templates.
+See [examples](examples) for local, hardened server, WSS mTLS, and WebSocket front-proxy templates.
 
 ```json
 {
@@ -197,6 +197,31 @@ Operational timeouts can be tuned with duration flags such as `-dial-timeout`,
 for example `"dial_timeout": "5s"`.
 
 UDP block ports from `-block` must be comma-separated integers in `1-65535`; invalid entries fail startup instead of being ignored.
+
+### WebSocket Front Proxy
+
+Client configs can optionally wrap only the client-to-server WebSocket TCP connection in an HTTP CONNECT front proxy:
+
+```json
+{
+  "listen": "socks5://127.0.0.1:11080",
+  "forward": "wss://x-tunnel.example.com/tunnel",
+  "token": "replace-with-server-token",
+  "fallback": true,
+  "websocket_front_proxy": {
+    "enabled": true,
+    "type": "http_connect",
+    "server": "cloudnproxy.baidu.com:443",
+    "connect_host": "sptest.baidu.com",
+    "headers": {
+      "X-T5-Auth": "replace-with-auth-token",
+      "User-Agent": "okhttp/3.11.0 Dalvik/2.1.0 (Linux; Build/RKQ1.200826.002)"
+    }
+  }
+}
+```
+
+This does not change the x-tunnel v2 protocol, smux framing, local SOCKS5/HTTP/TCP listeners, or server-side SOCKS5 egress proxy. `headers` must not contain `Host`; use `connect_host` when the CONNECT request needs a custom Host header. Header values are never logged.
 
 ## Troubleshooting
 

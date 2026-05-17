@@ -251,51 +251,52 @@ func versionString() string {
 }
 
 type FileConfig struct {
-	Listen             *string `json:"listen"`
-	Forward            *string `json:"forward"`
-	IP                 *string `json:"ip"`
-	Block              *string `json:"block"`
-	Cert               *string `json:"cert"`
-	Key                *string `json:"key"`
-	ClientCA           *string `json:"client_ca"`
-	ClientCert         *string `json:"client_cert"`
-	ClientKey          *string `json:"client_key"`
-	ClientCAFlag       *string `json:"client-ca"`
-	ClientCertFlag     *string `json:"client-cert"`
-	ClientKeyFlag      *string `json:"client-key"`
-	Token              *string `json:"token"`
-	Metrics            *string `json:"metrics"`
-	CIDR               *string `json:"cidr"`
-	AllowTarget        *string `json:"allow_target"`
-	DenyTarget         *string `json:"deny_target"`
-	AllowHost          *string `json:"allow_host"`
-	DenyHost           *string `json:"deny_host"`
-	AllowTargetFlag    *string `json:"allow-target"`
-	DenyTargetFlag     *string `json:"deny-target"`
-	AllowHostFlag      *string `json:"allow-host"`
-	DenyHostFlag       *string `json:"deny-host"`
-	MaxClients         *int    `json:"max_clients"`
-	MaxClientsFlag     *int    `json:"max-clients"`
-	MaxStreams         *int    `json:"max_streams"`
-	MaxStreamsFlag     *int    `json:"max-streams"`
-	DNS                *string `json:"dns"`
-	ECH                *string `json:"ech"`
-	IPS                *string `json:"ips"`
-	Connections        *int    `json:"connections"`
-	Insecure           *bool   `json:"insecure"`
-	Fallback           *bool   `json:"fallback"`
-	DialTimeout        *string `json:"dial_timeout"`
-	WSHandshakeTimeout *string `json:"ws_handshake_timeout"`
-	ReconnectDelay     *string `json:"reconnect_delay"`
-	ReconnectMaxDelay  *string `json:"reconnect_max_delay"`
-	ReconnectJitter    *string `json:"reconnect_jitter"`
-	RTTProbeTimeout    *string `json:"rtt_timeout"`
-	DNSQueryTimeout    *string `json:"dns_timeout"`
-	ECHRetryDelay      *string `json:"ech_retry_delay"`
-	UDPReadTimeout     *string `json:"udp_read_timeout"`
-	ShutdownTimeout    *string `json:"shutdown_timeout"`
-	AuthSkew           *string `json:"auth_skew"`
-	PreAuthTimeout     *string `json:"preauth_timeout"`
+	Listen              *string                    `json:"listen"`
+	Forward             *string                    `json:"forward"`
+	IP                  *string                    `json:"ip"`
+	Block               *string                    `json:"block"`
+	Cert                *string                    `json:"cert"`
+	Key                 *string                    `json:"key"`
+	ClientCA            *string                    `json:"client_ca"`
+	ClientCert          *string                    `json:"client_cert"`
+	ClientKey           *string                    `json:"client_key"`
+	ClientCAFlag        *string                    `json:"client-ca"`
+	ClientCertFlag      *string                    `json:"client-cert"`
+	ClientKeyFlag       *string                    `json:"client-key"`
+	Token               *string                    `json:"token"`
+	Metrics             *string                    `json:"metrics"`
+	CIDR                *string                    `json:"cidr"`
+	AllowTarget         *string                    `json:"allow_target"`
+	DenyTarget          *string                    `json:"deny_target"`
+	AllowHost           *string                    `json:"allow_host"`
+	DenyHost            *string                    `json:"deny_host"`
+	AllowTargetFlag     *string                    `json:"allow-target"`
+	DenyTargetFlag      *string                    `json:"deny-target"`
+	AllowHostFlag       *string                    `json:"allow-host"`
+	DenyHostFlag        *string                    `json:"deny-host"`
+	MaxClients          *int                       `json:"max_clients"`
+	MaxClientsFlag      *int                       `json:"max-clients"`
+	MaxStreams          *int                       `json:"max_streams"`
+	MaxStreamsFlag      *int                       `json:"max-streams"`
+	DNS                 *string                    `json:"dns"`
+	ECH                 *string                    `json:"ech"`
+	IPS                 *string                    `json:"ips"`
+	Connections         *int                       `json:"connections"`
+	Insecure            *bool                      `json:"insecure"`
+	Fallback            *bool                      `json:"fallback"`
+	WebSocketFrontProxy *WebSocketFrontProxyConfig `json:"websocket_front_proxy"`
+	DialTimeout         *string                    `json:"dial_timeout"`
+	WSHandshakeTimeout  *string                    `json:"ws_handshake_timeout"`
+	ReconnectDelay      *string                    `json:"reconnect_delay"`
+	ReconnectMaxDelay   *string                    `json:"reconnect_max_delay"`
+	ReconnectJitter     *string                    `json:"reconnect_jitter"`
+	RTTProbeTimeout     *string                    `json:"rtt_timeout"`
+	DNSQueryTimeout     *string                    `json:"dns_timeout"`
+	ECHRetryDelay       *string                    `json:"ech_retry_delay"`
+	UDPReadTimeout      *string                    `json:"udp_read_timeout"`
+	ShutdownTimeout     *string                    `json:"shutdown_timeout"`
+	AuthSkew            *string                    `json:"auth_skew"`
+	PreAuthTimeout      *string                    `json:"preauth_timeout"`
 }
 
 func visitedFlags() map[string]bool {
@@ -393,6 +394,11 @@ func loadConfigFile(path string, seen map[string]bool) error {
 	}
 	if fc.Fallback != nil && !seen["fallback"] {
 		fallback = *fc.Fallback
+	}
+	if fc.WebSocketFrontProxy != nil {
+		websocketFrontProxyConfig = cloneWebSocketFrontProxyConfig(*fc.WebSocketFrontProxy)
+	} else {
+		websocketFrontProxyConfig = WebSocketFrontProxyConfig{}
 	}
 	if err := applyDurationConfig(seen, "dial-timeout", fc.DialTimeout, &cfg.DialTimeout); err != nil {
 		return err
@@ -885,6 +891,9 @@ func validateStartupConfig() (*startupConfig, error) {
 		if err := validateECHLookupConfig(echDomain, dnsServer); err != nil {
 			return nil, fmt.Errorf("ECH 查询配置无效: %w", err)
 		}
+	}
+	if err := validateWebSocketFrontProxyConfig(websocketFrontProxyConfig); err != nil {
+		return nil, fmt.Errorf("WebSocket 前置代理配置无效: %w", err)
 	}
 	startup.Client = clientConfig
 	return startup, nil

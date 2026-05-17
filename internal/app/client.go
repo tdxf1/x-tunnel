@@ -518,13 +518,17 @@ func dialWebSocketWithECH(addr string, retries int, ip string) (*websocket.Conn,
 			ReadBufferSize:   cfg.ReadBuf,
 			WriteBufferSize:  cfg.ReadBuf,
 		}
-		if ip != "" {
-			dialer.NetDial = func(network, address string) (net.Conn, error) {
-				_, port, _ := net.SplitHostPort(address)
-				if host, p, err := net.SplitHostPort(ip); err == nil {
-					return net.DialTimeout(network, net.JoinHostPort(host, p), cfg.DialTimeout)
+		if ip != "" || frontProxyEnabled() {
+			dialer.NetDialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+				target, err := resolveWebSocketDialTarget(address, ip)
+				if err != nil {
+					return nil, err
 				}
-				return net.DialTimeout(network, net.JoinHostPort(ip, port), cfg.DialTimeout)
+				if frontProxyEnabled() {
+					return dialWebSocketFrontProxy(ctx, target)
+				}
+				d := net.Dialer{Timeout: cfg.DialTimeout}
+				return d.DialContext(ctx, network, target)
 			}
 		}
 		return dialer
@@ -572,6 +576,20 @@ func dialWebSocketWithECH(addr string, retries int, ip string) (*websocket.Conn,
 		return conn, nil
 	}
 	return nil, fmt.Errorf("连接失败")
+}
+
+func resolveWebSocketDialTarget(address, ip string) (string, error) {
+	if ip == "" {
+		return address, nil
+	}
+	_, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return "", fmt.Errorf("解析 WebSocket 目标地址失败 %q: %w", address, err)
+	}
+	if host, overridePort, err := net.SplitHostPort(ip); err == nil {
+		return net.JoinHostPort(host, overridePort), nil
+	}
+	return net.JoinHostPort(ip, port), nil
 }
 
 // ======================== SOCKS5 / HTTP Proxy ========================

@@ -78,6 +78,12 @@ func Main() {
 	log.Printf("[客户端] protocol=v2-only")
 	fallback = startup.Client.Fallback
 	udpBlockPorts = startup.Client.UDPBlockPorts
+	if frontProxyEnabled() {
+		log.Printf("[客户端] WebSocket 前置代理已启用: type=%s server=%s", websocketFrontProxyConfig.Type, websocketFrontProxyConfig.Server)
+		if startup.Client.ForwardScheme == "wss" && !fallback {
+			log.Printf("[客户端] 警告: WebSocket 前置代理只代理隧道 TCP 连接，ECH DNS 查询仍会直连；如前置代理要求完整链路，请启用 fallback")
+		}
+	}
 
 	if startup.Client.ForwardScheme == "wss" {
 		if insecure {

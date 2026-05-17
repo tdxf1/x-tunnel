@@ -1,0 +1,26 @@
+{
+  "listen": "socks5://127.0.0.1:11080",
+  "forward": "wss://x-tunnel.example.com/tunnel",
+  "token": "replace-with-server-token",
+  "connections": 1,
+  "fallback": true,
+  "insecure": false,
+  "dial_timeout": "3s",
+  "ws_handshake_timeout": "5s",
+  "reconnect_delay": "1s",
+  "reconnect_max_delay": "10s",
+  "reconnect_jitter": "250ms",
+  "rtt_timeout": "2s",
+  "websocket_front_proxy": {
+    "enabled": true,
+    "type": "http_connect",
+    "server": "cloudnproxy.baidu.com:443",
+    "connect_host": "sptest.baidu.com",
+    "headers": {
+      "X-T5-Auth": "replace-with-auth-token",
+      "User-Agent": "okhttp/3.11.0 Dalvik/2.1.0 (Linux; Build/RKQ1.200826.002) baiduboxapp/11.0.5.12 (Baidu; P1 11)",
+      "Proxy-Connection": "keep-alive",
+      "Connection": "keep-alive"
+    }
+  }
+}
