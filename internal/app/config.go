@@ -32,6 +32,8 @@ type GlobalConfig struct {
 	ECHRetryDelay      time.Duration
 	UDPReadTimeout     time.Duration
 	ShutdownTimeout    time.Duration
+	AuthSkew           time.Duration
+	PreAuthTimeout     time.Duration
 
 	ReadBuf int
 }
@@ -47,6 +49,8 @@ var cfg = GlobalConfig{
 	ECHRetryDelay:      2 * time.Second,
 	UDPReadTimeout:     1 * time.Second,
 	ShutdownTimeout:    5 * time.Second,
+	AuthSkew:           5 * time.Minute,
+	PreAuthTimeout:     5 * time.Second,
 	ReadBuf:            64 * 1024,
 }
 
@@ -168,8 +172,8 @@ var (
 	serverProtocolOKSeq        uint64
 	serverProtocolRejectSeq    uint64
 	serverProtocolFailureSeq   uint64
+	serverProtocolReplaySeq    uint64
 	clientProtocolOKSeq        uint64
-	clientProtocolLegacySeq    uint64
 	clientProtocolFailureSeq   uint64
 	clientRTTProbeFailureSeq   uint64
 )
@@ -213,7 +217,7 @@ func init() {
 	flag.StringVar(&clientCAFile, "client-ca", "", "服务端用于校验客户端证书的 CA PEM 文件（仅 wss 服务端）")
 	flag.StringVar(&clientCertFile, "client-cert", "", "客户端 mTLS 证书 PEM 文件（仅 wss 客户端）")
 	flag.StringVar(&clientKeyFile, "client-key", "", "客户端 mTLS 私钥 PEM 文件（仅 wss 客户端）")
-	flag.StringVar(&token, "token", "", "身份验证令牌（WebSocket Subprotocol）")
+	flag.StringVar(&token, "token", "", "v2 ChannelInit HMAC 预共享令牌（不会放入 URL 或 WebSocket Subprotocol）")
 	flag.BoolVar(&showVersion, "version", false, "输出版本信息并退出")
 	flag.StringVar(&metricsAddr, "metrics", "", "可选 metrics HTTP 监听地址，如 127.0.0.1:9090")
 	flag.StringVar(&cidrs, "cidr", "0.0.0.0/0,::/0", "允许的来源 IP 范围 (CIDR),多个范围用逗号分隔")
@@ -238,6 +242,8 @@ func init() {
 	flag.DurationVar(&cfg.ECHRetryDelay, "ech-retry-delay", cfg.ECHRetryDelay, "ECH 查询/刷新失败后的重试等待时间")
 	flag.DurationVar(&cfg.UDPReadTimeout, "udp-read-timeout", cfg.UDPReadTimeout, "服务端 UDP relay 读轮询超时时间")
 	flag.DurationVar(&cfg.ShutdownTimeout, "shutdown-timeout", cfg.ShutdownTimeout, "收到退出信号后的优雅关闭超时时间")
+	flag.DurationVar(&cfg.AuthSkew, "auth-skew", cfg.AuthSkew, "v2 ChannelInit 时间戳允许偏差")
+	flag.DurationVar(&cfg.PreAuthTimeout, "preauth-timeout", cfg.PreAuthTimeout, "v2 预认证阶段超时时间")
 }
 
 func versionString() string {
@@ -288,6 +294,8 @@ type FileConfig struct {
 	ECHRetryDelay      *string `json:"ech_retry_delay"`
 	UDPReadTimeout     *string `json:"udp_read_timeout"`
 	ShutdownTimeout    *string `json:"shutdown_timeout"`
+	AuthSkew           *string `json:"auth_skew"`
+	PreAuthTimeout     *string `json:"preauth_timeout"`
 }
 
 func visitedFlags() map[string]bool {
@@ -416,6 +424,12 @@ func loadConfigFile(path string, seen map[string]bool) error {
 	if err := applyDurationConfig(seen, "shutdown-timeout", fc.ShutdownTimeout, &cfg.ShutdownTimeout); err != nil {
 		return err
 	}
+	if err := applyNonNegativeDurationConfig(seen, "auth-skew", fc.AuthSkew, &cfg.AuthSkew); err != nil {
+		return err
+	}
+	if err := applyDurationConfig(seen, "preauth-timeout", fc.PreAuthTimeout, &cfg.PreAuthTimeout); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -510,6 +524,7 @@ func validateGlobalConfig() error {
 		{name: "ech-retry-delay", value: cfg.ECHRetryDelay},
 		{name: "udp-read-timeout", value: cfg.UDPReadTimeout},
 		{name: "shutdown-timeout", value: cfg.ShutdownTimeout},
+		{name: "preauth-timeout", value: cfg.PreAuthTimeout},
 	}
 	for _, check := range checks {
 		if check.value <= 0 {
@@ -518,6 +533,9 @@ func validateGlobalConfig() error {
 	}
 	if cfg.ReconnectJitter < 0 {
 		return fmt.Errorf("reconnect-jitter 不能小于 0")
+	}
+	if cfg.AuthSkew < 0 {
+		return fmt.Errorf("auth-skew 不能小于 0")
 	}
 	if cfg.ReconnectMaxDelay < cfg.ReconnectDelay {
 		return fmt.Errorf("reconnect-max-delay 不能小于 reconnect-delay")
@@ -588,10 +606,9 @@ func validateToken(value string) error {
 	if value == "" {
 		return nil
 	}
-	const separators = `()<>@,;:\"/[]?={} 	`
 	for _, r := range value {
-		if r < 33 || r > 126 || strings.ContainsRune(separators, r) {
-			return fmt.Errorf("必须是合法的 WebSocket subprotocol token，不能包含空白、控制字符或 HTTP 分隔符")
+		if r < 32 || r == 127 {
+			return fmt.Errorf("token 不能包含控制字符")
 		}
 	}
 	return nil

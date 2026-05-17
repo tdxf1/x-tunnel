@@ -2,7 +2,6 @@ package wire
 
 import (
 	"bytes"
-	"encoding/binary"
 	"testing"
 )
 
@@ -25,39 +24,6 @@ func TestSmuxOpenHeaderWireBytes(t *testing.T) {
 	}
 	if kind != StreamKindTCP || strategy != 3 || gotTarget != target {
 		t.Fatalf("header = kind=%d strategy=%d target=%q", kind, strategy, gotTarget)
-	}
-}
-
-func TestProtocolHelloWireBytes(t *testing.T) {
-	hello := ProtocolHello{
-		Version:      ProtocolVersion,
-		Status:       ProtocolStatusOK,
-		Capabilities: ProtocolCapabilityTCP | ProtocolCapabilityPing,
-		Message:      "ok",
-	}
-
-	var buf bytes.Buffer
-	if err := WriteProtocolHello(&buf, hello); err != nil {
-		t.Fatalf("WriteProtocolHello returned error: %v", err)
-	}
-
-	want := make([]byte, 12)
-	copy(want[0:4], []byte(ProtocolHelloMagic))
-	want[4] = ProtocolVersion
-	want[5] = ProtocolStatusOK
-	binary.BigEndian.PutUint16(want[6:8], 2)
-	binary.BigEndian.PutUint32(want[8:12], ProtocolCapabilityTCP|ProtocolCapabilityPing)
-	want = append(want, []byte("ok")...)
-	if !bytes.Equal(buf.Bytes(), want) {
-		t.Fatalf("wire bytes = %x, want %x", buf.Bytes(), want)
-	}
-
-	got, err := ReadProtocolHello(bytes.NewReader(buf.Bytes()))
-	if err != nil {
-		t.Fatalf("ReadProtocolHello returned error: %v", err)
-	}
-	if got != hello {
-		t.Fatalf("hello = %+v, want %+v", got, hello)
 	}
 }
 

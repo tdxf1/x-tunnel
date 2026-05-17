@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -120,7 +121,7 @@ func TestLocalTunnelIntegration(t *testing.T) {
 	waitTCP(t, ctx, httpProxyAddr, client)
 	waitTCP(t, ctx, clientMetricsAddr, client)
 	waitLogContains(t, ctx, clientLog, "协议协商成功", client)
-	waitLogContains(t, ctx, serverLog, "协议协商成功", server)
+	waitLogContains(t, ctx, serverLog, "v2 客户端通道", server)
 
 	assertBody(t, "tcp forward", fetchHTTP(t, "http://"+tcpAddr+"/payload"), body)
 	assertBody(t, "http proxy", fetchViaHTTPProxy(t, httpProxyAddr, "http://"+targetAddr+"/payload"), body)
@@ -142,7 +143,7 @@ func TestLocalTunnelIntegration(t *testing.T) {
 		t,
 		clientMetrics,
 		`x_tunnel_client_channel_capabilities{channel="1"}`,
-		strconv.FormatUint(uint64(currentProtocolCapabilities()), 10),
+		strconv.FormatUint(currentProtocolCapabilitiesV2(), 10),
 	)
 
 	badClient := startXTunnel(t, ctx, binPath, badClientLog,
@@ -153,8 +154,78 @@ func TestLocalTunnelIntegration(t *testing.T) {
 	)
 	defer stopProcess(badClient)
 	waitLogContains(t, ctx, badClientLog, "认证失败", badClient)
-	waitLogContains(t, ctx, serverLog, "Token 认证失败", server)
+	waitLogContains(t, ctx, serverLog, "v2 认证失败", server)
 	assertMetricValue(t, fetchHTTP(t, "http://"+metricsAddr+"/metrics"), "x_tunnel_server_auth_rejections_total", "1")
+}
+
+func TestIntegrationSimulatedCensorProxyAllowsV2Tunnel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	const body = "x-tunnel simulated censor payload\n"
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer origin.Close()
+	targetAddr := strings.TrimPrefix(origin.URL, "http://")
+
+	binPath := buildIntegrationBinary(t, ctx)
+	wsAddr := freeTCPAddr(t)
+	socksAddr := freeTCPAddr(t)
+	tcpAddr := freeTCPAddr(t)
+	metricsAddr := freeTCPAddr(t)
+
+	serverLog := filepath.Join(t.TempDir(), "censor-server.log")
+	clientLog := filepath.Join(t.TempDir(), "censor-client.log")
+
+	server := startXTunnel(t, ctx, binPath, serverLog,
+		"-l", "ws://"+wsAddr+"/tunnel",
+		"-token", "censor-token",
+		"-cidr", "127.0.0.1/32",
+		"-allow-target", "127.0.0.0/8",
+		"-metrics", metricsAddr,
+	)
+	defer stopProcess(server)
+	waitTCP(t, ctx, wsAddr, server)
+	waitTCP(t, ctx, metricsAddr, server)
+
+	censor := startSimulatedCensorProxy(t, ctx, wsAddr,
+		"censor-token",
+		"client_id",
+		"channel_id",
+		"sec-websocket-protocol",
+		"go-http-client",
+		"xtun",
+	)
+
+	client := startXTunnel(t, ctx, binPath, clientLog,
+		"-l", "socks5://"+socksAddr+",tcp://"+tcpAddr+"/"+targetAddr,
+		"-f", "ws://"+censor.addr+"/tunnel",
+		"-token", "censor-token",
+		"-n", "1",
+	)
+	defer stopProcess(client)
+	waitTCP(t, ctx, socksAddr, client)
+	waitTCP(t, ctx, tcpAddr, client)
+	waitLogContains(t, ctx, clientLog, "v2 协议协商成功", client)
+	waitLogContains(t, ctx, serverLog, "v2 客户端通道", server)
+
+	assertBody(t, "censor socks5", fetchViaSOCKS5(t, socksAddr, targetAddr, "/payload"), body)
+	assertBody(t, "censor tcp forward", fetchHTTP(t, "http://"+tcpAddr+"/payload"), body)
+	waitCensorInspectedFrames(t, ctx, censor, 1)
+
+	handshakes, frames, blocks, reasons := censor.snapshot()
+	if handshakes == 0 || frames == 0 {
+		t.Fatalf("censor inspected handshakes=%d frames=%d, want both >0", handshakes, frames)
+	}
+	if blocks != 0 {
+		t.Fatalf("censor blocked current v2 tunnel: %v", reasons)
+	}
+	assertMetricValue(t, fetchHTTP(t, "http://"+metricsAddr+"/metrics"), "x_tunnel_server_protocol_v2_accepts_total", "1")
 }
 
 func TestIntegrationLocalProxyAuth(t *testing.T) {
@@ -201,7 +272,7 @@ func TestIntegrationLocalProxyAuth(t *testing.T) {
 	waitTCP(t, ctx, socksAddr, client)
 	waitTCP(t, ctx, httpProxyAddr, client)
 	waitLogContains(t, ctx, clientLog, "协议协商成功", client)
-	waitLogContains(t, ctx, serverLog, "协议协商成功", server)
+	waitLogContains(t, ctx, serverLog, "v2 客户端通道", server)
 
 	assertHTTPProxyAuthChallenge(t, "HTTP proxy without auth", fetchViaHTTPProxyAuthChallenge(t, httpProxyAddr, "http://"+targetAddr+"/payload", "", ""))
 	assertHTTPProxyAuthChallenge(t, "HTTP proxy wrong auth", fetchViaHTTPProxyAuthChallenge(t, httpProxyAddr, "http://"+targetAddr+"/payload", "user", "wrong"))
@@ -351,7 +422,7 @@ func TestIntegrationLocalWSSFallback(t *testing.T) {
 	waitTCP(t, ctx, tcpAddr, client)
 	waitLogContains(t, ctx, clientLog, "fallback 模式已启用", client)
 	waitLogContains(t, ctx, clientLog, "协议协商成功", client)
-	waitLogContains(t, ctx, serverLog, "协议协商成功", server)
+	waitLogContains(t, ctx, serverLog, "v2 客户端通道", server)
 
 	assertBody(t, "wss tcp forward", fetchHTTP(t, "http://"+tcpAddr+"/payload"), body)
 }
@@ -413,7 +484,7 @@ func TestIntegrationLocalWSSMTLS(t *testing.T) {
 	defer stopProcess(client)
 	waitTCP(t, ctx, tcpAddr, client)
 	waitLogContains(t, ctx, clientLog, "协议协商成功", client)
-	waitLogContains(t, ctx, serverLog, "协议协商成功", server)
+	waitLogContains(t, ctx, serverLog, "v2 客户端通道", server)
 
 	assertBody(t, "wss mtls tcp forward", fetchHTTP(t, "http://"+tcpAddr+"/payload"), body)
 }
@@ -472,7 +543,7 @@ func TestIntegrationMaxClientsRejectsNewClient(t *testing.T) {
 	)
 	defer stopProcess(secondClient)
 	waitTCP(t, ctx, secondSocksAddr, secondClient)
-	waitLogContains(t, ctx, serverLog, "拒绝客户端会话", server)
+	waitLogContains(t, ctx, serverLog, "拒绝 v2 客户端会话", server)
 	waitLogContains(t, ctx, secondClientLog, "协议协商失败", secondClient)
 	assertMetricValue(t, fetchHTTP(t, "http://"+metricsAddr+"/metrics"), "x_tunnel_server_client_session_rejections_total", "1")
 	assertBody(t, "first client after max-clients rejection", fetchViaSOCKS5(t, firstSocksAddr, targetAddr, "/payload"), body)
@@ -732,6 +803,233 @@ func waitLogContains(t *testing.T, ctx context.Context, path, needle string, pro
 		select {
 		case <-ctx.Done():
 			t.Fatalf("context ended while waiting for log %q: %v", needle, ctx.Err())
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
+type simulatedCensorProxy struct {
+	addr               string
+	upstream           string
+	listener           net.Listener
+	forbiddenHandshake [][]byte
+	forbiddenPayload   [][]byte
+
+	mu         sync.Mutex
+	handshakes int
+	frames     int
+	blocks     []string
+}
+
+func startSimulatedCensorProxy(t *testing.T, ctx context.Context, upstream string, forbidden ...string) *simulatedCensorProxy {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("start simulated censor proxy: %v", err)
+	}
+	p := &simulatedCensorProxy{
+		addr:     ln.Addr().String(),
+		upstream: upstream,
+		listener: ln,
+	}
+	for _, marker := range forbidden {
+		lower := bytes.ToLower([]byte(marker))
+		p.forbiddenHandshake = append(p.forbiddenHandshake, lower)
+		switch strings.ToLower(marker) {
+		case "censor-token", "xtun":
+			p.forbiddenPayload = append(p.forbiddenPayload, lower)
+		}
+	}
+	go p.acceptLoop(ctx)
+	t.Cleanup(func() { _ = ln.Close() })
+	return p
+}
+
+func (p *simulatedCensorProxy) acceptLoop(ctx context.Context) {
+	for {
+		client, err := p.listener.Accept()
+		if err != nil {
+			return
+		}
+		go p.handleConn(ctx, client)
+	}
+}
+
+func (p *simulatedCensorProxy) handleConn(ctx context.Context, client net.Conn) {
+	defer client.Close()
+	upstream, err := net.DialTimeout("tcp", p.upstream, integrationIOTimeout)
+	if err != nil {
+		p.recordBlock("upstream dial failed: " + err.Error())
+		return
+	}
+	defer upstream.Close()
+
+	_ = client.SetDeadline(time.Now().Add(integrationIOTimeout))
+	header, err := readHTTPUpgradeHeader(client)
+	if err != nil {
+		p.recordBlock("read websocket upgrade failed: " + err.Error())
+		return
+	}
+	if reason := p.inspectUpgradeHeader(header); reason != "" {
+		p.recordBlock(reason)
+		return
+	}
+	p.mu.Lock()
+	p.handshakes++
+	p.mu.Unlock()
+	if err := writeAll(upstream, header); err != nil {
+		p.recordBlock("write websocket upgrade failed: " + err.Error())
+		return
+	}
+	_ = client.SetDeadline(time.Time{})
+	_ = upstream.SetDeadline(time.Time{})
+
+	done := make(chan struct{}, 2)
+	go func() {
+		_, _ = io.Copy(client, upstream)
+		done <- struct{}{}
+	}()
+	go func() {
+		p.copyClientWebSocketFrames(upstream, client)
+		done <- struct{}{}
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
+}
+
+func readHTTPUpgradeHeader(r io.Reader) ([]byte, error) {
+	var header []byte
+	var one [1]byte
+	for len(header) < 32*1024 {
+		if _, err := io.ReadFull(r, one[:]); err != nil {
+			return nil, err
+		}
+		header = append(header, one[0])
+		if bytes.HasSuffix(header, []byte("\r\n\r\n")) {
+			return header, nil
+		}
+	}
+	return nil, fmt.Errorf("websocket upgrade header too large")
+}
+
+func (p *simulatedCensorProxy) inspectUpgradeHeader(header []byte) string {
+	lower := bytes.ToLower(header)
+	firstLine := lower
+	if idx := bytes.Index(lower, []byte("\r\n")); idx >= 0 {
+		firstLine = lower[:idx]
+	}
+	if bytes.Contains(firstLine, []byte("?")) {
+		return "blocked websocket query metadata"
+	}
+	return findForbiddenMarker(p.forbiddenHandshake, lower, "websocket upgrade")
+}
+
+func (p *simulatedCensorProxy) copyClientWebSocketFrames(dst io.Writer, src io.Reader) {
+	for {
+		frame, payload, err := readClientWebSocketFrame(src)
+		if err != nil {
+			return
+		}
+		p.mu.Lock()
+		p.frames++
+		p.mu.Unlock()
+		if reason := findForbiddenMarker(p.forbiddenPayload, bytes.ToLower(payload), "client websocket payload"); reason != "" {
+			p.recordBlock(reason)
+			return
+		}
+		if err := writeAll(dst, frame); err != nil {
+			return
+		}
+	}
+}
+
+func readClientWebSocketFrame(r io.Reader) ([]byte, []byte, error) {
+	var raw bytes.Buffer
+	head := make([]byte, 2)
+	if _, err := io.ReadFull(r, head); err != nil {
+		return nil, nil, err
+	}
+	raw.Write(head)
+	masked := head[1]&0x80 != 0
+	payloadLen := uint64(head[1] & 0x7f)
+	switch payloadLen {
+	case 126:
+		ext := make([]byte, 2)
+		if _, err := io.ReadFull(r, ext); err != nil {
+			return nil, nil, err
+		}
+		raw.Write(ext)
+		payloadLen = uint64(binary.BigEndian.Uint16(ext))
+	case 127:
+		ext := make([]byte, 8)
+		if _, err := io.ReadFull(r, ext); err != nil {
+			return nil, nil, err
+		}
+		raw.Write(ext)
+		payloadLen = binary.BigEndian.Uint64(ext)
+	}
+	var mask [4]byte
+	if masked {
+		if _, err := io.ReadFull(r, mask[:]); err != nil {
+			return nil, nil, err
+		}
+		raw.Write(mask[:])
+	}
+	if payloadLen > 16*1024*1024 {
+		return nil, nil, fmt.Errorf("websocket payload too large: %d", payloadLen)
+	}
+	payload := make([]byte, int(payloadLen))
+	if _, err := io.ReadFull(r, payload); err != nil {
+		return nil, nil, err
+	}
+	raw.Write(payload)
+	decoded := append([]byte(nil), payload...)
+	if masked {
+		for i := range decoded {
+			decoded[i] ^= mask[i%4]
+		}
+	}
+	return raw.Bytes(), decoded, nil
+}
+
+func findForbiddenMarker(forbidden [][]byte, raw []byte, phase string) string {
+	for _, marker := range forbidden {
+		if bytes.Contains(raw, marker) {
+			return fmt.Sprintf("blocked %s marker %q", phase, marker)
+		}
+	}
+	return ""
+}
+
+func (p *simulatedCensorProxy) recordBlock(reason string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.blocks = append(p.blocks, reason)
+}
+
+func (p *simulatedCensorProxy) snapshot() (int, int, int, []string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.handshakes, p.frames, len(p.blocks), append([]string(nil), p.blocks...)
+}
+
+func waitCensorInspectedFrames(t *testing.T, ctx context.Context, p *simulatedCensorProxy, minFrames int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, frames, _, _ := p.snapshot()
+		if frames >= minFrames {
+			return
+		}
+		if time.Now().After(deadline) {
+			handshakes, frames, blocks, reasons := p.snapshot()
+			t.Fatalf("censor inspected handshakes=%d frames=%d blocks=%d reasons=%v, want frames >= %d", handshakes, frames, blocks, reasons, minFrames)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("context ended while waiting for censor frames: %v", ctx.Err())
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
@@ -1602,9 +1900,12 @@ func assertMetrics(t *testing.T, got string) {
 		"x_tunnel_server_protocol_negotiations_total",
 		"x_tunnel_server_protocol_negotiation_rejections_total",
 		"x_tunnel_server_protocol_negotiation_failures_total",
+		"x_tunnel_server_protocol_v2_accepts_total",
+		"x_tunnel_server_protocol_v2_rejections_total",
+		"x_tunnel_server_protocol_v2_auth_failures_total",
 		"x_tunnel_client_protocol_negotiations_total",
-		"x_tunnel_client_protocol_legacy_sessions_total",
 		"x_tunnel_client_protocol_negotiation_failures_total",
+		"x_tunnel_client_protocol_v2_success_total",
 		"x_tunnel_server_sessions",
 	} {
 		if !strings.Contains(got, want) {

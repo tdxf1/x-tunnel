@@ -3,20 +3,20 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/xtaci/smux"
 )
@@ -30,7 +30,7 @@ type ECHPool struct {
 	wsConnsMu     sync.RWMutex
 	smuxConns     []*smux.Session
 	channelRTT    []int64
-	channelCaps   []uint32
+	channelCaps   []uint64
 	selectCounter uint64
 }
 
@@ -46,7 +46,7 @@ func NewECHPool(addr string, n int, ips []string, clientID string) *ECHPool {
 		clientID:      clientID,
 		smuxConns:     make([]*smux.Session, total),
 		channelRTT:    make([]int64, total),
-		channelCaps:   make([]uint32, total),
+		channelCaps:   make([]uint64, total),
 	}
 	return p
 }
@@ -81,7 +81,7 @@ func (p *ECHPool) dialAndServe(ctx context.Context, idx int, ip string) {
 		if ctx.Err() != nil {
 			return
 		}
-		wsConn, err := dialWebSocketWithECH(p.wsServerAddr, 3, ip, p.clientID, chID)
+		wsConn, err := dialWebSocketWithECH(p.wsServerAddr, 3, ip)
 		if err != nil {
 			if !sleepBeforeReconnect(fmt.Sprintf("连接失败: %v", err)) {
 				return
@@ -97,7 +97,7 @@ func (p *ECHPool) dialAndServe(ctx context.Context, idx int, ip string) {
 			}
 			continue
 		}
-		caps, legacyProtocol, err := negotiateClientProtocol(sess, cfg.RTTProbeTimeout)
+		caps, err := negotiateClientProtocol(sess, cfg.RTTProbeTimeout, p.clientID, uint32(chID), p.wsServerAddr)
 		if err != nil {
 			atomic.AddUint64(&clientProtocolFailureSeq, 1)
 			_ = sess.Close()
@@ -107,13 +107,8 @@ func (p *ECHPool) dialAndServe(ctx context.Context, idx int, ip string) {
 			}
 			continue
 		}
-		if legacyProtocol {
-			atomic.AddUint64(&clientProtocolLegacySeq, 1)
-			log.Printf("[客户端] 通道 %d (IP:%s) 使用旧协议模式（服务端未响应 hello）", chID, ipLabel)
-		} else {
-			atomic.AddUint64(&clientProtocolOKSeq, 1)
-			log.Printf("[客户端] 通道 %d (IP:%s) 协议协商成功: version=%d caps=0x%x", chID, ipLabel, protocolVersion, caps)
-		}
+		atomic.AddUint64(&clientProtocolOKSeq, 1)
+		log.Printf("[客户端] 通道 %d (IP:%s) v2 协议协商成功: version=2 caps=0x%x", chID, ipLabel, caps)
 		p.wsConnsMu.Lock()
 		p.smuxConns[idx] = sess
 		p.channelRTT[idx] = 0
@@ -216,50 +211,61 @@ func (p *ECHPool) probeChannelRTTOnce(sess *smux.Session, timeout time.Duration)
 	return time.Since(start).Nanoseconds(), nil
 }
 
-func negotiateClientProtocol(sess *smux.Session, timeout time.Duration) (uint32, bool, error) {
+func negotiateClientProtocol(sess *smux.Session, timeout time.Duration, clientID string, channelID uint32, serverAddr string) (uint64, error) {
 	s, err := sess.OpenStream()
 	if err != nil {
-		return 0, false, err
+		return 0, err
 	}
 	defer s.Close()
 	_ = s.SetDeadline(time.Now().Add(timeout))
-	if err := writeSmuxOpenHeader(s, streamKindHello, IPStrategyDefault, ""); err != nil {
-		return 0, false, err
-	}
-	if err := writeProtocolHello(s, currentProtocolHello()); err != nil {
-		return 0, false, err
-	}
-	response, err := readProtocolHello(s)
+	sessionID, err := clientSessionIDBytes(clientID)
 	if err != nil {
-		if isLegacyProtocolHelloError(err) {
-			return 0, true, nil
+		return 0, err
+	}
+	nonce := make([]byte, 32)
+	if _, err := rand.Read(nonce); err != nil {
+		return 0, err
+	}
+	serverName, serverPath, err := protocolAuthEndpoint(serverAddr)
+	if err != nil {
+		return 0, err
+	}
+	init := ChannelInit{
+		SessionID:    sessionID,
+		ChannelID:    channelID,
+		ClientNonce:  nonce,
+		Timestamp:    time.Now().Unix(),
+		Capabilities: currentProtocolCapabilitiesV2(),
+	}
+	proof, err := computeV2AuthProof(token, serverName, serverPath, init)
+	if err != nil {
+		return 0, err
+	}
+	init.AuthProof = proof
+	if err := writeChannelInit(s, init); err != nil {
+		return 0, err
+	}
+	accept, reject, err := readChannelAcceptOrReject(s, maxV2FrameSize)
+	if err != nil {
+		return 0, err
+	}
+	if reject.Code != 0 {
+		if reject.Code == v2RejectAuthenticationFailed {
+			if reject.Message != "" {
+				return 0, fmt.Errorf("认证失败: %s", reject.Message)
+			}
+			return 0, fmt.Errorf("认证失败")
 		}
-		return 0, false, err
-	}
-	if response.Status != protocolStatusOK {
-		if response.Message != "" {
-			return 0, false, fmt.Errorf("协议协商失败: %s", response.Message)
+		if reject.Message != "" {
+			return 0, fmt.Errorf("协议协商失败: reject=%d %s", reject.Code, reject.Message)
 		}
-		return 0, false, fmt.Errorf("协议协商失败: status=%d", response.Status)
+		return 0, fmt.Errorf("协议协商失败: reject=%d", reject.Code)
 	}
-	if response.Version != protocolVersion {
-		return 0, false, fmt.Errorf("协议版本不匹配: %d", response.Version)
+	required := requiredProtocolCapabilitiesV2()
+	if accept.Capabilities&required != required {
+		return 0, fmt.Errorf("协议能力不足: caps=0x%x", accept.Capabilities)
 	}
-	required := requiredProtocolCapabilities()
-	if response.Capabilities&required != required {
-		return 0, false, fmt.Errorf("协议能力不足: caps=0x%x", response.Capabilities)
-	}
-	return response.Capabilities, false, nil
-}
-
-func isLegacyProtocolHelloError(err error) bool {
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-		return true
-	}
-	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-		return true
-	}
-	return false
+	return accept.Capabilities, nil
 }
 
 func shortID(id string) string {
@@ -267,6 +273,41 @@ func shortID(id string) string {
 		return id[:8]
 	}
 	return id
+}
+
+func clientSessionIDBytes(clientID string) ([]byte, error) {
+	id, err := uuid.Parse(clientID)
+	if err != nil {
+		return nil, fmt.Errorf("client id invalid: %w", err)
+	}
+	return id[:], nil
+}
+
+func protocolAuthEndpoint(raw string) (string, string, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", "", err
+	}
+	serverName := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	if serverName == "" {
+		return "", "", fmt.Errorf("server name is empty")
+	}
+	path := u.Path
+	if path == "" {
+		path = "/"
+	}
+	return serverName, path, nil
+}
+
+const defaultWebSocketUserAgent = "Mozilla/5.0"
+
+func webSocketRequestHeader() http.Header {
+	header := make(http.Header)
+	header.Set("User-Agent", defaultWebSocketUserAgent)
+	header.Set("Accept-Language", "en-US,en;q=0.9")
+	header.Set("Cache-Control", "no-cache")
+	header.Set("Pragma", "no-cache")
+	return header
 }
 
 func proxyConnStream(c net.Conn, stream *smux.Stream) {
@@ -303,7 +344,7 @@ func logClientConnEvent(c net.Conn, reqType, target string, chID int, opened boo
 	log.Printf("[客户端] %s %s %s %s 通道 %d", clientSourceAddr(c), reqType, arrow, target, chID)
 }
 
-func (p *ECHPool) openBestStream() (*smux.Stream, int, int, uint32, error) {
+func (p *ECHPool) openBestStream() (*smux.Stream, int, int, uint64, error) {
 	p.wsConnsMu.RLock()
 	type candidate struct {
 		idx int
@@ -363,25 +404,23 @@ func (p *ECHPool) openTCPStream(target string) (*smux.Stream, int, int, error) {
 		_ = s.Close()
 		return nil, 0, 0, err
 	}
-	if caps&protocolCapabilityTCPStatus != 0 {
-		_ = s.SetDeadline(time.Now().Add(cfg.DialTimeout))
-		var status byte
-		var code byte
-		var message string
-		if caps&protocolCapabilityOpenStatusCode != 0 {
-			status, code, message, err = readTCPOpenStatusCode(s)
-		} else {
-			status, message, err = readTCPOpenStatus(s)
-		}
-		_ = s.SetDeadline(time.Time{})
-		if err != nil {
-			_ = s.Close()
-			return nil, 0, 0, err
-		}
-		if status != tcpOpenStatusOK {
-			_ = s.Close()
-			return nil, 0, 0, &remoteOpenError{network: "TCP", status: status, code: code, message: message}
-		}
+	_ = s.SetDeadline(time.Now().Add(cfg.DialTimeout))
+	var status byte
+	var code byte
+	var message string
+	if caps&protocolCapabilityOpenStatusCode != 0 {
+		status, code, message, err = readTCPOpenStatusCode(s)
+	} else {
+		status, message, err = readTCPOpenStatus(s)
+	}
+	_ = s.SetDeadline(time.Time{})
+	if err != nil {
+		_ = s.Close()
+		return nil, 0, 0, err
+	}
+	if status != tcpOpenStatusOK {
+		_ = s.Close()
+		return nil, 0, 0, &remoteOpenError{network: "TCP", status: status, code: code, message: message}
 	}
 	return s, chID, decision, nil
 }
@@ -395,25 +434,23 @@ func (p *ECHPool) openUDPStream(target string) (*smux.Stream, int, int, error) {
 		_ = s.Close()
 		return nil, 0, 0, err
 	}
-	if caps&protocolCapabilityUDPStatus != 0 {
-		_ = s.SetDeadline(time.Now().Add(cfg.DialTimeout))
-		var status byte
-		var code byte
-		var message string
-		if caps&protocolCapabilityOpenStatusCode != 0 {
-			status, code, message, err = readUDPOpenStatusCode(s)
-		} else {
-			status, message, err = readUDPOpenStatus(s)
-		}
-		_ = s.SetDeadline(time.Time{})
-		if err != nil {
-			_ = s.Close()
-			return nil, 0, 0, err
-		}
-		if status != udpOpenStatusOK {
-			_ = s.Close()
-			return nil, 0, 0, &remoteOpenError{network: "UDP", status: status, code: code, message: message}
-		}
+	_ = s.SetDeadline(time.Now().Add(cfg.DialTimeout))
+	var status byte
+	var code byte
+	var message string
+	if caps&protocolCapabilityOpenStatusCode != 0 {
+		status, code, message, err = readUDPOpenStatusCode(s)
+	} else {
+		status, message, err = readUDPOpenStatus(s)
+	}
+	_ = s.SetDeadline(time.Time{})
+	if err != nil {
+		_ = s.Close()
+		return nil, 0, 0, err
+	}
+	if status != udpOpenStatusOK {
+		_ = s.Close()
+		return nil, 0, 0, &remoteOpenError{network: "UDP", status: status, code: code, message: message}
 	}
 	return s, chID, decision, nil
 }
@@ -458,8 +495,10 @@ func handleLocalTCP(c net.Conn, target string) {
 	proxyConnStream(c, stream)
 }
 
-// dialWebSocketWithECH：支持 ws:// 与 wss://；仅 wss 使用 TLS/ECH 逻辑
-func dialWebSocketWithECH(addr string, retries int, ip string, clientID string, channelID int) (*websocket.Conn, error) {
+// dialWebSocketWithECH：支持 ws:// 与 wss://；仅 wss 使用 TLS/ECH 逻辑。
+// v2 通道身份、认证 proof 与 channel id 都在 WebSocket 升级后的
+// ChannelInit 中发送；这里必须保持 URL query 与 Sec-WebSocket-Protocol 为空。
+func dialWebSocketWithECH(addr string, retries int, ip string) (*websocket.Conn, error) {
 	u, err := url.Parse(addr)
 	if err != nil {
 		return nil, err
@@ -470,14 +509,7 @@ func dialWebSocketWithECH(addr string, retries int, ip string, clientID string, 
 	}
 
 	dialURL := *u
-	q := dialURL.Query()
-	if clientID != "" {
-		q.Set("client_id", clientID)
-	}
-	if channelID > 0 {
-		q.Set("channel_id", strconv.Itoa(channelID))
-	}
-	dialURL.RawQuery = q.Encode()
+	dialURL.RawQuery = ""
 	dialAddr := dialURL.String()
 
 	newDialer := func() websocket.Dialer {
@@ -485,9 +517,6 @@ func dialWebSocketWithECH(addr string, retries int, ip string, clientID string, 
 			HandshakeTimeout: cfg.WSHandshakeTimeout,
 			ReadBufferSize:   cfg.ReadBuf,
 			WriteBufferSize:  cfg.ReadBuf,
-		}
-		if token != "" {
-			dialer.Subprotocols = []string{token}
 		}
 		if ip != "" {
 			dialer.NetDial = func(network, address string) (net.Conn, error) {
@@ -503,10 +532,10 @@ func dialWebSocketWithECH(addr string, retries int, ip string, clientID string, 
 
 	if scheme == "ws" {
 		dialer := newDialer()
-		conn, resp, err := dialer.Dial(dialAddr, nil)
+		conn, resp, err := dialer.Dial(dialAddr, webSocketRequestHeader())
 		if err != nil {
 			if resp != nil && resp.StatusCode == http.StatusUnauthorized {
-				return nil, fmt.Errorf("认证失败：Token 不匹配或未提供")
+				return nil, fmt.Errorf("认证失败")
 			}
 			return nil, err
 		}
@@ -528,10 +557,10 @@ func dialWebSocketWithECH(addr string, retries int, ip string, clientID string, 
 		dialer := newDialer()
 		dialer.TLSClientConfig = tlsCfg
 
-		conn, resp, err := dialer.Dial(dialAddr, nil)
+		conn, resp, err := dialer.Dial(dialAddr, webSocketRequestHeader())
 		if err != nil {
 			if resp != nil && resp.StatusCode == http.StatusUnauthorized {
-				return nil, fmt.Errorf("认证失败：Token 不匹配或未提供")
+				return nil, fmt.Errorf("认证失败")
 			}
 			if !fallback && (strings.Contains(err.Error(), "ECH") || strings.Contains(err.Error(), "ech")) && i < retries {
 				_ = refreshECH()

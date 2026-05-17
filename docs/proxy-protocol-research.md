@@ -37,7 +37,7 @@ Current alignment:
 
 - `CONNECT host:port HTTP/1.1` opens an opaque TCP tunnel through smux.
 - A successful CONNECT response is `HTTP/1.1 200 Connection Established`, with no `Content-Length` and no `Transfer-Encoding`, before switching to tunnel bytes.
-- Failed remote TCP opens return an HTTP error locally instead of starting a tunnel. Structured `policy_denied` failures map to `403 Forbidden`; legacy/unstructured failures and dial/setup failures map to `502 Bad Gateway`.
+- Failed remote TCP opens return an HTTP error locally instead of starting a tunnel. Structured `policy_denied` failures map to `403 Forbidden`; other structured remote open failures and dial/setup failures map to `502 Bad Gateway`.
 - Non-CONNECT proxy requests accept `http://` absolute-form requests and origin-form requests with a `Host` header.
 - Hop-by-hop headers, including headers named by `Connection`, are stripped before forwarding ordinary HTTP requests.
 - Forwarded non-CONNECT requests append `Via: 1.1 x-tunnel`.
@@ -63,10 +63,10 @@ Good next work:
 
 - If CONNECT-UDP is added later, implement it as a separate local listener mode or explicit feature flag, not as an implicit change to existing HTTP CONNECT handling.
 - Reuse target validation, UDP read timeouts, metrics, and stream limits from the current UDP path.
-- Keep the internal smux UDP stream protocol versioned through the hello/capability mechanism before adding any new UDP error/status frames.
+- Keep the internal smux UDP stream protocol gated by v2 ChannelInit capabilities before adding any new UDP error/status frames.
 
 ## Development Heuristics
 
-- Preserve legacy smux stream behavior unless a capability bit proves both sides understand a new frame.
+- Preserve the current compact smux stream behavior unless a v2 capability bit proves both sides understand a new frame.
 - Prefer fixed byte-level golden tests for protocol frame writers and real loopback tests for proxy behavior.
 - Treat public proxy protocols as compatibility boundaries. Internal smux framing can evolve, but local SOCKS5 and HTTP behavior should stay boring and predictable.

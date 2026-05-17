@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/xtaci/smux"
 )
@@ -198,7 +199,6 @@ func TestWriteMetrics(t *testing.T) {
 	oldServerProtocolRejects := atomic.LoadUint64(&serverProtocolRejectSeq)
 	oldServerProtocolFailures := atomic.LoadUint64(&serverProtocolFailureSeq)
 	oldClientProtocolOK := atomic.LoadUint64(&clientProtocolOKSeq)
-	oldClientProtocolLegacy := atomic.LoadUint64(&clientProtocolLegacySeq)
 	oldClientProtocolFailures := atomic.LoadUint64(&clientProtocolFailureSeq)
 	oldRTTProbeFailures := atomic.LoadUint64(&clientRTTProbeFailureSeq)
 	oldPool := echPool
@@ -217,7 +217,6 @@ func TestWriteMetrics(t *testing.T) {
 		atomic.StoreUint64(&serverProtocolRejectSeq, oldServerProtocolRejects)
 		atomic.StoreUint64(&serverProtocolFailureSeq, oldServerProtocolFailures)
 		atomic.StoreUint64(&clientProtocolOKSeq, oldClientProtocolOK)
-		atomic.StoreUint64(&clientProtocolLegacySeq, oldClientProtocolLegacy)
 		atomic.StoreUint64(&clientProtocolFailureSeq, oldClientProtocolFailures)
 		atomic.StoreUint64(&clientRTTProbeFailureSeq, oldRTTProbeFailures)
 		echPool = oldPool
@@ -237,7 +236,6 @@ func TestWriteMetrics(t *testing.T) {
 	atomic.StoreUint64(&serverProtocolRejectSeq, 37)
 	atomic.StoreUint64(&serverProtocolFailureSeq, 41)
 	atomic.StoreUint64(&clientProtocolOKSeq, 43)
-	atomic.StoreUint64(&clientProtocolLegacySeq, 47)
 	atomic.StoreUint64(&clientProtocolFailureSeq, 53)
 	atomic.StoreUint64(&clientRTTProbeFailureSeq, 59)
 	serverSessions.Store("metrics-test", &ClientSession{
@@ -249,7 +247,7 @@ func TestWriteMetrics(t *testing.T) {
 	echPool = &ECHPool{
 		smuxConns:   []*smux.Session{clientSession, nil},
 		channelRTT:  []int64{int64(25 * time.Millisecond), 0},
-		channelCaps: []uint32{protocolCapabilityTCPStatus | protocolCapabilityOpenStatusCode, 0},
+		channelCaps: []uint64{protocolCapabilityTCPStatus | protocolCapabilityOpenStatusCode, 0},
 	}
 
 	var buf bytes.Buffer
@@ -270,8 +268,9 @@ func TestWriteMetrics(t *testing.T) {
 		"x_tunnel_server_protocol_negotiation_rejections_total 37",
 		"x_tunnel_server_protocol_negotiation_failures_total 41",
 		"x_tunnel_client_protocol_negotiations_total 43",
-		"x_tunnel_client_protocol_legacy_sessions_total 47",
 		"x_tunnel_client_protocol_negotiation_failures_total 53",
+		"x_tunnel_client_protocol_v2_success_total 43",
+		"x_tunnel_client_protocol_v2_failures_total 53",
 		"x_tunnel_client_rtt_probe_failures_total 59",
 		"x_tunnel_server_sessions 1",
 		"x_tunnel_server_channels 2",
@@ -518,6 +517,8 @@ func TestValidateGlobalConfig(t *testing.T) {
 		ECHRetryDelay:      time.Second,
 		UDPReadTimeout:     time.Second,
 		ShutdownTimeout:    time.Second,
+		AuthSkew:           time.Second,
+		PreAuthTimeout:     time.Second,
 		ReadBuf:            64 * 1024,
 	}
 	maxClientSessions = 0
@@ -1101,6 +1102,49 @@ func TestClientSessionStreamLimitAccounting(t *testing.T) {
 	}
 }
 
+func TestNonceReplayCacheRejectsDuplicatesAndExpires(t *testing.T) {
+	cache := newNonceReplayCache(4)
+	sessionID := bytes.Repeat([]byte{1}, 16)
+	nonce := bytes.Repeat([]byte{2}, 32)
+	now := time.Unix(1_700_000_000, 0)
+
+	if cache.seenOrStore(sessionID, 7, nonce, now, time.Minute) {
+		t.Fatal("first nonce use was reported as replay")
+	}
+	if !cache.seenOrStore(sessionID, 7, nonce, now.Add(time.Second), time.Minute) {
+		t.Fatal("duplicate nonce use was not reported as replay")
+	}
+	if cache.seenOrStore(sessionID, 8, nonce, now.Add(2*time.Second), time.Minute) {
+		t.Fatal("different channel id was incorrectly reported as replay")
+	}
+	if cache.seenOrStore(sessionID, 7, nonce, now.Add(2*time.Minute), time.Minute) {
+		t.Fatal("expired nonce was still reported as replay")
+	}
+}
+
+func TestNonceReplayCacheEvictsOldestWhenFull(t *testing.T) {
+	cache := newNonceReplayCache(2)
+	sessionID := bytes.Repeat([]byte{1}, 16)
+	now := time.Unix(1_700_000_000, 0)
+	nonce := func(v byte) []byte { return bytes.Repeat([]byte{v}, 32) }
+
+	if cache.seenOrStore(sessionID, 1, nonce(1), now, 0) {
+		t.Fatal("first nonce was reported as replay")
+	}
+	if cache.seenOrStore(sessionID, 1, nonce(2), now, 0) {
+		t.Fatal("second nonce was reported as replay")
+	}
+	if cache.seenOrStore(sessionID, 1, nonce(3), now, 0) {
+		t.Fatal("third nonce was reported as replay")
+	}
+	if cache.seenOrStore(sessionID, 1, nonce(1), now, 0) {
+		t.Fatal("oldest evicted nonce was still reported as replay")
+	}
+	if !cache.seenOrStore(sessionID, 1, nonce(3), now, 0) {
+		t.Fatal("newest nonce was not retained in replay cache")
+	}
+}
+
 func TestClientSessionLimitAllowsExistingClient(t *testing.T) {
 	oldMaxClients := maxClientSessions
 	defer func() {
@@ -1138,92 +1182,6 @@ func TestClientSessionLimitAllowsExistingClient(t *testing.T) {
 	second, ok := getOrCreateClientSession("client-b")
 	if !ok || second == nil {
 		t.Fatalf("second client after release = %v ok %v, want non-nil ok true", second, ok)
-	}
-}
-
-func TestParseWSChannelMetadata(t *testing.T) {
-	cid, channelID, err := parseWSChannelMetadata(url.Values{})
-	if err != nil {
-		t.Fatalf("parseWSChannelMetadata empty returned error: %v", err)
-	}
-	if cid == "" {
-		t.Fatal("parseWSChannelMetadata empty returned empty generated client_id")
-	}
-	if channelID != 0 {
-		t.Fatalf("parseWSChannelMetadata empty channel = %d, want 0", channelID)
-	}
-
-	cid, channelID, err = parseWSChannelMetadata(url.Values{
-		"client_id":  {"client-123"},
-		"channel_id": {"7"},
-	})
-	if err != nil {
-		t.Fatalf("parseWSChannelMetadata valid returned error: %v", err)
-	}
-	if cid != "client-123" || channelID != 7 {
-		t.Fatalf("parseWSChannelMetadata valid = client %q channel %d, want client-123 channel 7", cid, channelID)
-	}
-}
-
-func TestParseWSChannelMetadataRejectsInvalidValues(t *testing.T) {
-	tests := []struct {
-		name   string
-		values url.Values
-		want   string
-	}{
-		{
-			name:   "client id empty",
-			values: url.Values{"client_id": {""}},
-			want:   "client_id",
-		},
-		{
-			name:   "client id whitespace",
-			values: url.Values{"client_id": {"bad id"}},
-			want:   "client_id",
-		},
-		{
-			name:   "client id non ascii",
-			values: url.Values{"client_id": {"客户端"}},
-			want:   "client_id",
-		},
-		{
-			name:   "client id too long",
-			values: url.Values{"client_id": {strings.Repeat("a", maxWSClientIDLength+1)}},
-			want:   "过长",
-		},
-		{
-			name:   "channel id empty",
-			values: url.Values{"channel_id": {""}},
-			want:   "channel_id",
-		},
-		{
-			name:   "channel id non numeric",
-			values: url.Values{"channel_id": {"abc"}},
-			want:   "channel_id",
-		},
-		{
-			name:   "channel id negative",
-			values: url.Values{"channel_id": {"-1"}},
-			want:   "channel_id",
-		},
-		{
-			name:   "channel id too long",
-			values: url.Values{"channel_id": {strings.Repeat("9", maxWSChannelIDLength+1)}},
-			want:   "过长",
-		},
-		{
-			name:   "channel id overflow",
-			values: url.Values{"channel_id": {"18446744073709551616"}},
-			want:   "channel_id",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if _, _, err := parseWSChannelMetadata(tt.values); err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("parseWSChannelMetadata err = %v, want containing %q", err, tt.want)
-			}
-		})
 	}
 }
 
@@ -1597,14 +1555,14 @@ func TestLoadConfigFileRejectsDuplicateClientAliases(t *testing.T) {
 }
 
 func TestValidateToken(t *testing.T) {
-	valid := []string{"", "local-test-token", "abc.DEF_123~"}
+	valid := []string{"", "local-test-token", "abc.DEF_123~", "has space", "bad,comma", "bad/slash", "中文-token"}
 	for _, token := range valid {
 		if err := validateToken(token); err != nil {
 			t.Fatalf("validateToken(%q) returned error: %v", token, err)
 		}
 	}
 
-	invalid := []string{"has space", "bad,comma", "bad/slash", "bad\nline"}
+	invalid := []string{"bad\nline", "bad\tindent", "bad\x7fdel"}
 	for _, token := range invalid {
 		if err := validateToken(token); err == nil {
 			t.Fatalf("validateToken(%q) accepted invalid token", token)
@@ -1793,6 +1751,8 @@ func validTestGlobalConfig() GlobalConfig {
 		ECHRetryDelay:      time.Second,
 		UDPReadTimeout:     time.Second,
 		ShutdownTimeout:    time.Second,
+		AuthSkew:           time.Second,
+		PreAuthTimeout:     time.Second,
 		ReadBuf:            64 * 1024,
 	}
 }
@@ -2133,12 +2093,12 @@ func newTestWSNetConnPair(t *testing.T) (*wsNetConn, *wsNetConn) {
 	return client, serverConn
 }
 
-func TestHandleWebSocketChannelNegotiatesHelloAndCleansUp(t *testing.T) {
+func TestHandleWebSocketChannelAuthenticatedLoopCleansUp(t *testing.T) {
 	oldCfg := cfg
 	t.Cleanup(func() { cfg = oldCfg })
 	cfg.RTTProbeTimeout = time.Second
 
-	const clientID = "channel-hello-test"
+	const clientID = "channel-authenticated-loop-test"
 	serverSessions.Delete(clientID)
 	t.Cleanup(func() { serverSessions.Delete(clientID) })
 
@@ -2189,22 +2149,6 @@ func TestHandleWebSocketChannelNegotiatesHelloAndCleansUp(t *testing.T) {
 		_ = clientConn.Close()
 		t.Fatalf("create smux client: %v", err)
 	}
-	caps, legacy, err := negotiateClientProtocol(clientSession, time.Second)
-	if err != nil {
-		_ = clientSession.Close()
-		_ = clientConn.Close()
-		t.Fatalf("negotiate protocol over websocket channel: %v", err)
-	}
-	if legacy {
-		t.Fatal("negotiateClientProtocol reported legacy mode")
-	}
-	if caps != currentProtocolCapabilities() {
-		t.Fatalf("negotiated caps = 0x%x, want 0x%x", caps, currentProtocolCapabilities())
-	}
-	if got := atomic.LoadUint32(&ch.capabilities); got != currentProtocolCapabilities() {
-		t.Fatalf("channel capabilities = 0x%x, want 0x%x", got, currentProtocolCapabilities())
-	}
-
 	_ = clientSession.Close()
 	_ = clientConn.Close()
 	select {
@@ -2240,7 +2184,7 @@ func TestHandleWebSocketChannelReturnsTCPStatusWhenStreamLimitReached(t *testing
 		activeStreams: 1,
 	}
 	ch := &WSChannel{id: 1, conn: serverConn.ws, session: session}
-	atomic.StoreUint32(&ch.capabilities, protocolCapabilityTCPStatus)
+	atomic.StoreUint64(&ch.capabilities, protocolCapabilityTCPStatus)
 
 	done := make(chan struct{})
 	go func() {
@@ -2299,7 +2243,7 @@ func TestHandleWebSocketChannelReturnsUDPStatusWhenStreamLimitReached(t *testing
 		activeStreams: 1,
 	}
 	ch := &WSChannel{id: 1, conn: serverConn.ws, session: session}
-	atomic.StoreUint32(&ch.capabilities, protocolCapabilityUDPStatus)
+	atomic.StoreUint64(&ch.capabilities, protocolCapabilityUDPStatus)
 
 	done := make(chan struct{})
 	go func() {
@@ -2358,7 +2302,7 @@ func TestHandleWebSocketChannelReturnsUDPStatusCodeWhenStreamLimitReached(t *tes
 		activeStreams: 1,
 	}
 	ch := &WSChannel{id: 1, conn: serverConn.ws, session: session}
-	atomic.StoreUint32(&ch.capabilities, protocolCapabilityUDPStatus|protocolCapabilityOpenStatusCode)
+	atomic.StoreUint64(&ch.capabilities, protocolCapabilityUDPStatus|protocolCapabilityOpenStatusCode)
 
 	done := make(chan struct{})
 	go func() {
@@ -2460,6 +2404,7 @@ func TestDialWebSocketWithECHWSMetadata(t *testing.T) {
 		clientID    string
 		channelID   string
 		subprotocol string
+		userAgent   string
 	}
 	requests := make(chan dialRequest, 1)
 	upgrader := websocket.Upgrader{
@@ -2476,13 +2421,14 @@ func TestDialWebSocketWithECHWSMetadata(t *testing.T) {
 			clientID:    r.URL.Query().Get("client_id"),
 			channelID:   r.URL.Query().Get("channel_id"),
 			subprotocol: conn.Subprotocol(),
+			userAgent:   r.Header.Get("User-Agent"),
 		}
 		_ = conn.Close()
 	}))
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	conn, err := dialWebSocketWithECH(wsURL, 1, "", "client-123", 7)
+	conn, err := dialWebSocketWithECH(wsURL, 1, "")
 	if err != nil {
 		t.Fatalf("dialWebSocketWithECH returned error: %v", err)
 	}
@@ -2490,8 +2436,11 @@ func TestDialWebSocketWithECHWSMetadata(t *testing.T) {
 
 	select {
 	case req := <-requests:
-		if req.clientID != "client-123" || req.channelID != "7" || req.subprotocol != "ws-test-token" {
-			t.Fatalf("dial metadata = %#v, want client_id client-123 channel_id 7 subprotocol ws-test-token", req)
+		if req.clientID != "" || req.channelID != "" || req.subprotocol != "" {
+			t.Fatalf("dial metadata = %#v, want no v2 query metadata or token subprotocol", req)
+		}
+		if req.userAgent == "" || strings.Contains(strings.ToLower(req.userAgent), "go-http-client") {
+			t.Fatalf("dial User-Agent = %q, want non-Go request shape", req.userAgent)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for websocket dial metadata")
@@ -2511,7 +2460,7 @@ func TestDialWebSocketWithECHMapsUnauthorized(t *testing.T) {
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	if _, err := dialWebSocketWithECH(wsURL, 1, "", "", 0); err == nil || !strings.Contains(err.Error(), "认证失败") {
+	if _, err := dialWebSocketWithECH(wsURL, 1, ""); err == nil || !strings.Contains(err.Error(), "认证失败") {
 		t.Fatalf("dialWebSocketWithECH unauthorized err = %v", err)
 	}
 }
@@ -2541,7 +2490,7 @@ func TestDialWebSocketWithECHIPOverride(t *testing.T) {
 		t.Fatalf("split test server address: %v", err)
 	}
 	wsURL := "ws://example.invalid:" + port
-	conn, err := dialWebSocketWithECH(wsURL, 1, "127.0.0.1", "", 0)
+	conn, err := dialWebSocketWithECH(wsURL, 1, "127.0.0.1")
 	if err != nil {
 		t.Fatalf("dialWebSocketWithECH IP override returned error: %v", err)
 	}
@@ -2575,7 +2524,7 @@ func TestDialWebSocketWithECHHostPortOverride(t *testing.T) {
 	defer server.Close()
 
 	wsURL := "ws://example.invalid:1"
-	conn, err := dialWebSocketWithECH(wsURL, 1, server.Listener.Addr().String(), "", 0)
+	conn, err := dialWebSocketWithECH(wsURL, 1, server.Listener.Addr().String())
 	if err != nil {
 		t.Fatalf("dialWebSocketWithECH host:port override returned error: %v", err)
 	}
@@ -2610,6 +2559,7 @@ func TestDialWebSocketWithECHWSSFallbackInsecure(t *testing.T) {
 		clientID    string
 		channelID   string
 		subprotocol string
+		userAgent   string
 	}
 	requests := make(chan dialRequest, 1)
 	upgrader := websocket.Upgrader{
@@ -2626,13 +2576,14 @@ func TestDialWebSocketWithECHWSSFallbackInsecure(t *testing.T) {
 			clientID:    r.URL.Query().Get("client_id"),
 			channelID:   r.URL.Query().Get("channel_id"),
 			subprotocol: conn.Subprotocol(),
+			userAgent:   r.Header.Get("User-Agent"),
 		}
 		_ = conn.Close()
 	}))
 	defer server.Close()
 
 	wssURL := "wss" + strings.TrimPrefix(server.URL, "https")
-	conn, err := dialWebSocketWithECH(wssURL, 1, "", "client-wss", 11)
+	conn, err := dialWebSocketWithECH(wssURL, 1, "")
 	if err != nil {
 		t.Fatalf("dialWebSocketWithECH wss fallback returned error: %v", err)
 	}
@@ -2640,8 +2591,11 @@ func TestDialWebSocketWithECHWSSFallbackInsecure(t *testing.T) {
 
 	select {
 	case req := <-requests:
-		if req.clientID != "client-wss" || req.channelID != "11" || req.subprotocol != "wss-test-token" {
-			t.Fatalf("wss dial metadata = %#v, want client_id client-wss channel_id 11 subprotocol wss-test-token", req)
+		if req.clientID != "" || req.channelID != "" || req.subprotocol != "" {
+			t.Fatalf("wss dial metadata = %#v, want no v2 query metadata or token subprotocol", req)
+		}
+		if req.userAgent == "" || strings.Contains(strings.ToLower(req.userAgent), "go-http-client") {
+			t.Fatalf("wss dial User-Agent = %q, want non-Go request shape", req.userAgent)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for wss dial metadata")
@@ -4153,7 +4107,7 @@ func TestHandleSOCKS5ConnectProxiesOverSmux(t *testing.T) {
 	echPool = &ECHPool{
 		smuxConns:   []*smux.Session{clientSession},
 		channelRTT:  []int64{int64(5 * time.Millisecond)},
-		channelCaps: []uint32{protocolCapabilityTCPStatus},
+		channelCaps: []uint64{protocolCapabilityTCPStatus},
 	}
 
 	serverDone := make(chan error, 1)
@@ -4247,7 +4201,7 @@ func TestHandleSOCKS5ConnectReturnsFailureOnTCPStatusError(t *testing.T) {
 	echPool = &ECHPool{
 		smuxConns:   []*smux.Session{clientSession},
 		channelRTT:  []int64{int64(5 * time.Millisecond)},
-		channelCaps: []uint32{protocolCapabilityTCPStatus},
+		channelCaps: []uint64{protocolCapabilityTCPStatus},
 	}
 
 	serverDone := make(chan error, 1)
@@ -4320,7 +4274,7 @@ func TestHandleSOCKS5ConnectMapsPolicyDeniedStatusCode(t *testing.T) {
 	echPool = &ECHPool{
 		smuxConns:   []*smux.Session{clientSession},
 		channelRTT:  []int64{int64(5 * time.Millisecond)},
-		channelCaps: []uint32{protocolCapabilityTCPStatus | protocolCapabilityOpenStatusCode},
+		channelCaps: []uint64{protocolCapabilityTCPStatus | protocolCapabilityOpenStatusCode},
 	}
 
 	serverDone := make(chan error, 1)
@@ -4588,30 +4542,6 @@ func handleHTTPResponse(t *testing.T, request string, cfgp *ProxyConfig) *http.R
 	return resp
 }
 
-func TestWebSocketRequestHasToken(t *testing.T) {
-	tests := []struct {
-		name   string
-		header string
-		want   bool
-	}{
-		{name: "single token", header: "secret-token", want: true},
-		{name: "token in list", header: "other, secret-token", want: true},
-		{name: "token later in list with spaces", header: "other,  secret-token , final", want: true},
-		{name: "missing token", header: "other, final", want: false},
-		{name: "partial token", header: "secret-token-extra", want: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "http://example.com/tunnel", nil)
-			req.Header.Set("Sec-WebSocket-Protocol", tt.header)
-			if got := webSocketRequestHasToken(req, "secret-token"); got != tt.want {
-				t.Fatalf("webSocketRequestHasToken(%q) = %v, want %v", tt.header, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestHTTPProxyTarget(t *testing.T) {
 	tests := []struct {
 		name string
@@ -4811,7 +4741,7 @@ func TestHandleHTTPPostOpensStreamBeforeBodyComplete(t *testing.T) {
 	echPool = &ECHPool{
 		smuxConns:   []*smux.Session{clientSession},
 		channelRTT:  []int64{1},
-		channelCaps: []uint32{0},
+		channelCaps: []uint64{currentProtocolCapabilitiesV2()},
 	}
 
 	accepted := make(chan *smux.Stream, 1)
@@ -4856,6 +4786,9 @@ func TestHandleHTTPPostOpensStreamBeforeBodyComplete(t *testing.T) {
 	}
 	if kind != streamKindTCP || strategy != IPStrategyDefault || target != "example.com:80" {
 		t.Fatalf("POST smux header = kind %d strategy %d target %q", kind, strategy, target)
+	}
+	if err := writeTCPOpenSuccess(serverStream, currentProtocolCapabilitiesV2()); err != nil {
+		t.Fatalf("write POST TCP open status: %v", err)
 	}
 
 	br := bufio.NewReader(serverStream)
@@ -4933,7 +4866,7 @@ func TestHandleHTTPConnectForwardsBufferedClientBytes(t *testing.T) {
 	echPool = &ECHPool{
 		smuxConns:   []*smux.Session{clientSession},
 		channelRTT:  []int64{1},
-		channelCaps: []uint32{0},
+		channelCaps: []uint64{currentProtocolCapabilitiesV2()},
 	}
 
 	accepted := make(chan *smux.Stream, 1)
@@ -4961,23 +4894,6 @@ func TestHandleHTTPConnectForwardsBufferedClientBytes(t *testing.T) {
 	if err := writeAll(proxyClient, req); err != nil {
 		t.Fatalf("write CONNECT request with early bytes: %v", err)
 	}
-	resp, err := http.ReadResponse(bufio.NewReader(proxyClient), nil)
-	if err != nil {
-		t.Fatalf("read CONNECT response: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("CONNECT response status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-	if resp.Status != "200 Connection Established" {
-		t.Fatalf("CONNECT response status line = %q, want 200 Connection Established", resp.Status)
-	}
-	if got := resp.Header.Get("Content-Length"); got != "" {
-		t.Fatalf("CONNECT response Content-Length = %q, want absent", got)
-	}
-	if got := resp.Header.Get("Transfer-Encoding"); got != "" {
-		t.Fatalf("CONNECT response Transfer-Encoding = %q, want absent", got)
-	}
 
 	var serverStream *smux.Stream
 	select {
@@ -4996,6 +4912,26 @@ func TestHandleHTTPConnectForwardsBufferedClientBytes(t *testing.T) {
 	}
 	if kind != streamKindTCP || strategy != IPStrategyDefault || target != "example.com:443" {
 		t.Fatalf("CONNECT smux header = kind %d strategy %d target %q", kind, strategy, target)
+	}
+	if err := writeTCPOpenSuccess(serverStream, currentProtocolCapabilitiesV2()); err != nil {
+		t.Fatalf("write CONNECT TCP open status: %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(proxyClient), nil)
+	if err != nil {
+		t.Fatalf("read CONNECT response: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT response status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if resp.Status != "200 Connection Established" {
+		t.Fatalf("CONNECT response status line = %q, want 200 Connection Established", resp.Status)
+	}
+	if got := resp.Header.Get("Content-Length"); got != "" {
+		t.Fatalf("CONNECT response Content-Length = %q, want absent", got)
+	}
+	if got := resp.Header.Get("Transfer-Encoding"); got != "" {
+		t.Fatalf("CONNECT response Transfer-Encoding = %q, want absent", got)
 	}
 	got := make([]byte, len(early))
 	if _, err := io.ReadFull(serverStream, got); err != nil {
@@ -5029,7 +4965,7 @@ func TestHandleHTTPConnectReturnsBadGatewayOnTCPStatusError(t *testing.T) {
 	echPool = &ECHPool{
 		smuxConns:   []*smux.Session{clientSession},
 		channelRTT:  []int64{int64(5 * time.Millisecond)},
-		channelCaps: []uint32{protocolCapabilityTCPStatus},
+		channelCaps: []uint64{protocolCapabilityTCPStatus},
 	}
 	serverDone := make(chan error, 1)
 	go func() {
@@ -5110,7 +5046,7 @@ func TestHandleHTTPConnectMapsPolicyDeniedStatusCodeToForbidden(t *testing.T) {
 	echPool = &ECHPool{
 		smuxConns:   []*smux.Session{clientSession},
 		channelRTT:  []int64{int64(5 * time.Millisecond)},
-		channelCaps: []uint32{protocolCapabilityTCPStatus | protocolCapabilityOpenStatusCode},
+		channelCaps: []uint64{protocolCapabilityTCPStatus | protocolCapabilityOpenStatusCode},
 	}
 	serverDone := make(chan error, 1)
 	go func() {
@@ -5184,7 +5120,7 @@ func TestHandleHTTPGetReturnsBadGatewayOnTCPStatusError(t *testing.T) {
 	echPool = &ECHPool{
 		smuxConns:   []*smux.Session{clientSession},
 		channelRTT:  []int64{int64(5 * time.Millisecond)},
-		channelCaps: []uint32{protocolCapabilityTCPStatus},
+		channelCaps: []uint64{protocolCapabilityTCPStatus},
 	}
 	serverDone := make(chan error, 1)
 	go func() {
@@ -5308,13 +5244,7 @@ func TestValidateSmuxStreamTarget(t *testing.T) {
 }
 
 func TestProtocolConstants(t *testing.T) {
-	if protocolVersion != 1 {
-		t.Fatalf("protocolVersion = %d, want 1", protocolVersion)
-	}
-	if protocolStatusOK != 0 {
-		t.Fatalf("protocolStatusOK = %d, want 0", protocolStatusOK)
-	}
-	if got, want := requiredProtocolCapabilities(), protocolCapabilityTCP|protocolCapabilityPing; got != want {
+	if got, want := requiredProtocolCapabilities(), uint32(protocolCapabilityTCP|protocolCapabilityPing); got != want {
 		t.Fatalf("requiredProtocolCapabilities = 0x%x, want 0x%x", got, want)
 	}
 	if currentProtocolCapabilities()&requiredProtocolCapabilities() != requiredProtocolCapabilities() {
@@ -5323,7 +5253,7 @@ func TestProtocolConstants(t *testing.T) {
 }
 
 func TestIsSupportedStreamKind(t *testing.T) {
-	for _, kind := range []byte{streamKindTCP, streamKindUDP, streamKindPing, streamKindHello} {
+	for _, kind := range []byte{streamKindTCP, streamKindUDP, streamKindPing} {
 		if !isSupportedStreamKind(kind) {
 			t.Fatalf("isSupportedStreamKind(%d) = false, want true", kind)
 		}
@@ -5851,13 +5781,21 @@ func TestHandleSmuxStreamUDPProxiesDatagram(t *testing.T) {
 	clientStream, serverStream := openAcceptedSmuxTestStreamWithHeader(t, streamKindUDP, IPStrategyDefault, targetAddr)
 	done := make(chan struct{})
 	session := &ClientSession{clientID: "udp-smux-success-test", channels: make(map[uint64]*WSChannel)}
+	ch := &WSChannel{id: 1, session: session, capabilities: currentProtocolCapabilitiesV2()}
 	go func() {
 		defer close(done)
-		handleSmuxStream(session, &WSChannel{id: 1, session: session}, serverStream)
+		handleSmuxStream(session, ch, serverStream)
 	}()
 
 	if err := clientStream.SetDeadline(time.Now().Add(time.Second)); err != nil {
 		t.Fatalf("set client stream deadline: %v", err)
+	}
+	status, code, message, err := readUDPOpenStatusCode(clientStream)
+	if err != nil {
+		t.Fatalf("read UDP v2 open status: %v", err)
+	}
+	if status != udpOpenStatusOK || code != openStatusCodeNone || message != "" {
+		t.Fatalf("UDP v2 open status = %d %d %q, want OK none empty", status, code, message)
 	}
 	if err := writeChunk(clientStream, []byte("dns")); err != nil {
 		t.Fatalf("write UDP smux chunk: %v", err)
@@ -5928,217 +5866,6 @@ func TestHandleSmuxStreamUDPStatusOKBeforeDatagrams(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for UDPStatus smux success handler")
-	}
-}
-
-func TestHandleSmuxStreamHelloDeadline(t *testing.T) {
-	oldCfg := cfg
-	oldProtocolFailures := atomic.LoadUint64(&serverProtocolFailureSeq)
-	defer func() {
-		cfg = oldCfg
-		atomic.StoreUint64(&serverProtocolFailureSeq, oldProtocolFailures)
-	}()
-	cfg.RTTProbeTimeout = 50 * time.Millisecond
-	atomic.StoreUint64(&serverProtocolFailureSeq, 0)
-
-	serverConn, clientConn := net.Pipe()
-	defer serverConn.Close()
-	defer clientConn.Close()
-
-	serverSession, err := smux.Server(serverConn, nil)
-	if err != nil {
-		t.Fatalf("smux server: %v", err)
-	}
-	defer serverSession.Close()
-	clientSession, err := smux.Client(clientConn, nil)
-	if err != nil {
-		t.Fatalf("smux client: %v", err)
-	}
-	defer clientSession.Close()
-
-	accepted := make(chan *smux.Stream, 1)
-	acceptErr := make(chan error, 1)
-	go func() {
-		stream, err := serverSession.AcceptStream()
-		if err != nil {
-			acceptErr <- err
-			return
-		}
-		accepted <- stream
-	}()
-
-	clientStream, err := clientSession.OpenStream()
-	if err != nil {
-		t.Fatalf("open smux stream: %v", err)
-	}
-	defer clientStream.Close()
-	if err := writeSmuxOpenHeader(clientStream, streamKindHello, IPStrategyDefault, ""); err != nil {
-		t.Fatalf("write hello stream header: %v", err)
-	}
-
-	var serverStream *smux.Stream
-	select {
-	case serverStream = <-accepted:
-	case err := <-acceptErr:
-		t.Fatalf("accept smux stream: %v", err)
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for accepted smux stream")
-	}
-
-	done := make(chan struct{})
-	session := &ClientSession{clientID: "hello-deadline-test", channels: make(map[uint64]*WSChannel)}
-	go func() {
-		defer close(done)
-		handleSmuxStream(session, &WSChannel{id: 1, session: session}, serverStream)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for half-open hello stream handler")
-	}
-	if got := atomic.LoadUint64(&serverProtocolFailureSeq); got != 1 {
-		t.Fatalf("serverProtocolFailureSeq = %d, want 1", got)
-	}
-}
-
-func TestHandleSmuxStreamRejectsUnsupportedProtocolHello(t *testing.T) {
-	oldCfg := cfg
-	oldProtocolRejects := atomic.LoadUint64(&serverProtocolRejectSeq)
-	oldProtocolFailures := atomic.LoadUint64(&serverProtocolFailureSeq)
-	defer func() {
-		cfg = oldCfg
-		atomic.StoreUint64(&serverProtocolRejectSeq, oldProtocolRejects)
-		atomic.StoreUint64(&serverProtocolFailureSeq, oldProtocolFailures)
-	}()
-	cfg.RTTProbeTimeout = time.Second
-	atomic.StoreUint64(&serverProtocolRejectSeq, 0)
-	atomic.StoreUint64(&serverProtocolFailureSeq, 0)
-
-	serverConn, clientConn := net.Pipe()
-	defer serverConn.Close()
-	defer clientConn.Close()
-
-	serverSession, err := smux.Server(serverConn, nil)
-	if err != nil {
-		t.Fatalf("smux server: %v", err)
-	}
-	defer serverSession.Close()
-	clientSession, err := smux.Client(clientConn, nil)
-	if err != nil {
-		t.Fatalf("smux client: %v", err)
-	}
-	defer clientSession.Close()
-
-	accepted := make(chan *smux.Stream, 1)
-	acceptErr := make(chan error, 1)
-	go func() {
-		stream, err := serverSession.AcceptStream()
-		if err != nil {
-			acceptErr <- err
-			return
-		}
-		accepted <- stream
-	}()
-
-	clientStream, err := clientSession.OpenStream()
-	if err != nil {
-		t.Fatalf("open smux stream: %v", err)
-	}
-	defer clientStream.Close()
-	_ = clientStream.SetDeadline(time.Now().Add(time.Second))
-	if err := writeSmuxOpenHeader(clientStream, streamKindHello, IPStrategyDefault, ""); err != nil {
-		t.Fatalf("write hello stream header: %v", err)
-	}
-	hello := currentProtocolHello()
-	hello.Version = protocolVersion + 1
-	if err := writeProtocolHello(clientStream, hello); err != nil {
-		t.Fatalf("write unsupported protocol hello: %v", err)
-	}
-
-	var serverStream *smux.Stream
-	select {
-	case serverStream = <-accepted:
-	case err := <-acceptErr:
-		t.Fatalf("accept smux stream: %v", err)
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for accepted smux stream")
-	}
-
-	done := make(chan struct{})
-	session := &ClientSession{clientID: "hello-reject-test", channels: make(map[uint64]*WSChannel)}
-	go func() {
-		defer close(done)
-		handleSmuxStream(session, &WSChannel{id: 1, session: session}, serverStream)
-	}()
-
-	response, err := readProtocolHello(clientStream)
-	if err != nil {
-		t.Fatalf("read protocol rejection response: %v", err)
-	}
-	if response.Status != protocolStatusUnsupportedVersion {
-		t.Fatalf("protocol response status = %d, want %d", response.Status, protocolStatusUnsupportedVersion)
-	}
-
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for unsupported protocol hello handler")
-	}
-	if got := atomic.LoadUint64(&serverProtocolRejectSeq); got != 1 {
-		t.Fatalf("serverProtocolRejectSeq = %d, want 1", got)
-	}
-	if got := atomic.LoadUint64(&serverProtocolFailureSeq); got != 0 {
-		t.Fatalf("serverProtocolFailureSeq = %d, want 0", got)
-	}
-}
-
-func TestProtocolHelloRoundTrip(t *testing.T) {
-	if protocolStatusOK != 0 {
-		t.Fatalf("protocolStatusOK = %d, want 0", protocolStatusOK)
-	}
-
-	var buf bytes.Buffer
-	want := ProtocolHello{
-		Version:      protocolVersion,
-		Status:       protocolStatusOK,
-		Capabilities: protocolCapabilityTCP | protocolCapabilityPing,
-		Message:      "ok",
-	}
-	if err := writeProtocolHello(&buf, want); err != nil {
-		t.Fatalf("writeProtocolHello returned error: %v", err)
-	}
-
-	got, err := readProtocolHello(&buf)
-	if err != nil {
-		t.Fatalf("readProtocolHello returned error: %v", err)
-	}
-	if got != want {
-		t.Fatalf("readProtocolHello = %#v, want %#v", got, want)
-	}
-}
-
-func TestProtocolHelloWireBytes(t *testing.T) {
-	var buf bytes.Buffer
-	hello := ProtocolHello{
-		Version:      protocolVersion,
-		Status:       protocolStatusNoCommonCapabilities,
-		Capabilities: protocolCapabilityTCP | protocolCapabilityPing,
-		Message:      "no",
-	}
-	if err := writeProtocolHello(&buf, hello); err != nil {
-		t.Fatalf("writeProtocolHello returned error: %v", err)
-	}
-	want := []byte{'X', 'T', 'U', 'N', 0x01, 0x02, 0x00, 0x02, 0x00, 0x00, 0x00, 0x05, 'n', 'o'}
-	if !bytes.Equal(buf.Bytes(), want) {
-		t.Fatalf("protocol hello bytes = %x, want %x", buf.Bytes(), want)
-	}
-}
-
-func TestProtocolHelloRejectsOversizedMessage(t *testing.T) {
-	err := writeProtocolHello(io.Discard, ProtocolHello{Message: strings.Repeat("x", 65536)})
-	if err == nil {
-		t.Fatal("writeProtocolHello accepted oversized message")
 	}
 }
 
@@ -6297,8 +6024,8 @@ func TestFormatOpenStatusError(t *testing.T) {
 		message string
 		want    string
 	}{
-		{name: "legacy message", status: tcpOpenStatusError, code: openStatusCodeNone, message: "blocked", want: "blocked"},
-		{name: "empty legacy message", status: tcpOpenStatusError, code: openStatusCodeNone, want: "status=1"},
+		{name: "message without structured code", status: tcpOpenStatusError, code: openStatusCodeNone, message: "blocked", want: "blocked"},
+		{name: "empty message without structured code", status: tcpOpenStatusError, code: openStatusCodeNone, want: "status=1"},
 		{name: "known code", status: tcpOpenStatusError, code: openStatusCodePolicyDenied, message: "blocked", want: "policy_denied: blocked"},
 		{name: "unknown code", status: tcpOpenStatusError, code: 200, message: "custom", want: "code_200: custom"},
 	}
@@ -6310,69 +6037,6 @@ func TestFormatOpenStatusError(t *testing.T) {
 		})
 	}
 }
-
-func TestReadProtocolHelloMalformed(t *testing.T) {
-	if _, err := readProtocolHello(bytes.NewReader([]byte("bad"))); err == nil {
-		t.Fatal("readProtocolHello accepted short frame")
-	}
-
-	raw := make([]byte, 12)
-	copy(raw[0:4], []byte("NOPE"))
-	if _, err := readProtocolHello(bytes.NewReader(raw)); err == nil {
-		t.Fatal("readProtocolHello accepted bad magic")
-	}
-
-	raw = make([]byte, 12)
-	copy(raw[0:4], []byte(protocolHelloMagic))
-	raw[6], raw[7] = 0, 5
-	raw = append(raw, 'x')
-	if _, err := readProtocolHello(bytes.NewReader(raw)); err == nil {
-		t.Fatal("readProtocolHello accepted truncated message")
-	}
-}
-
-func TestNegotiateProtocolHello(t *testing.T) {
-	ok := negotiateProtocolHello(ProtocolHello{
-		Version:      protocolVersion,
-		Capabilities: currentProtocolCapabilities(),
-	})
-	if ok.Status != protocolStatusOK {
-		t.Fatalf("negotiateProtocolHello status = %d, want OK", ok.Status)
-	}
-	if ok.Capabilities != currentProtocolCapabilities() {
-		t.Fatalf("negotiateProtocolHello caps = 0x%x, want 0x%x", ok.Capabilities, currentProtocolCapabilities())
-	}
-
-	unsupported := negotiateProtocolHello(ProtocolHello{
-		Version:      protocolVersion + 1,
-		Capabilities: currentProtocolCapabilities(),
-	})
-	if unsupported.Status != protocolStatusUnsupportedVersion {
-		t.Fatalf("unsupported version status = %d", unsupported.Status)
-	}
-
-	noCommon := negotiateProtocolHello(ProtocolHello{
-		Version:      protocolVersion,
-		Capabilities: 1 << 31,
-	})
-	if noCommon.Status != protocolStatusNoCommonCapabilities {
-		t.Fatalf("no common capability status = %d", noCommon.Status)
-	}
-
-	missingRequired := negotiateProtocolHello(ProtocolHello{
-		Version:      protocolVersion,
-		Capabilities: protocolCapabilityUDP,
-	})
-	if missingRequired.Status != protocolStatusNoCommonCapabilities {
-		t.Fatalf("missing required capability status = %d", missingRequired.Status)
-	}
-}
-
-type protocolTimeoutTestError struct{}
-
-func (protocolTimeoutTestError) Error() string   { return "timeout" }
-func (protocolTimeoutTestError) Timeout() bool   { return true }
-func (protocolTimeoutTestError) Temporary() bool { return false }
 
 func newProtocolNegotiationSmuxPair(t *testing.T) (*smux.Session, *smux.Session) {
 	t.Helper()
@@ -6394,7 +6058,28 @@ func newProtocolNegotiationSmuxPair(t *testing.T) (*smux.Session, *smux.Session)
 	return serverSession, clientSession
 }
 
+func TestProtocolAuthEndpointCanonicalizesServerName(t *testing.T) {
+	serverName, path, err := protocolAuthEndpoint("wss://Example.COM:443/tunnel")
+	if err != nil {
+		t.Fatalf("protocolAuthEndpoint returned error: %v", err)
+	}
+	if serverName != "example.com" || path != "/tunnel" {
+		t.Fatalf("protocolAuthEndpoint = %q %q, want example.com /tunnel", serverName, path)
+	}
+
+	serverName, path, err = protocolAuthEndpoint("ws://[::1]:18080")
+	if err != nil {
+		t.Fatalf("protocolAuthEndpoint IPv6 returned error: %v", err)
+	}
+	if serverName != "::1" || path != "/" {
+		t.Fatalf("protocolAuthEndpoint IPv6 = %q %q, want ::1 /", serverName, path)
+	}
+}
+
 func TestNegotiateClientProtocolSuccess(t *testing.T) {
+	oldToken := token
+	t.Cleanup(func() { token = oldToken })
+	token = "v2-test-token"
 	serverSession, clientSession := newProtocolNegotiationSmuxPair(t)
 	serverDone := make(chan error, 1)
 	go func() {
@@ -6408,76 +6093,66 @@ func TestNegotiateClientProtocolSuccess(t *testing.T) {
 			serverDone <- err
 			return
 		}
-		kind, strategy, target, err := readSmuxOpenHeader(stream)
+		init, err := readChannelInit(stream, maxV2FrameSize)
 		if err != nil {
 			serverDone <- err
 			return
 		}
-		if kind != streamKindHello || strategy != IPStrategyDefault || target != "" {
-			serverDone <- fmt.Errorf("hello open header = kind %d strategy %d target %q", kind, strategy, target)
+		if !verifyV2AuthProof(token, "example.com", "/tunnel", init) {
+			serverDone <- fmt.Errorf("auth proof did not verify")
 			return
 		}
-		hello, err := readProtocolHello(stream)
-		if err != nil {
-			serverDone <- err
-			return
-		}
-		serverDone <- writeProtocolHello(stream, negotiateProtocolHello(hello))
+		serverDone <- writeChannelAccept(stream, ChannelAccept{
+			Capabilities: currentProtocolCapabilitiesV2(),
+			ServerNonce:  bytes.Repeat([]byte{1}, 32),
+			ServerTime:   time.Now().Unix(),
+			MaxFrameSize: maxV2FrameSize,
+		})
 	}()
 
-	caps, legacy, err := negotiateClientProtocol(clientSession, time.Second)
+	caps, err := negotiateClientProtocol(clientSession, time.Second, uuid.NewString(), 1, "ws://example.com/tunnel")
 	if err != nil {
 		t.Fatalf("negotiateClientProtocol returned error: %v", err)
 	}
-	if legacy {
-		t.Fatal("negotiateClientProtocol reported legacy mode on successful hello")
-	}
-	if caps != currentProtocolCapabilities() {
-		t.Fatalf("negotiateClientProtocol caps = 0x%x, want 0x%x", caps, currentProtocolCapabilities())
+	if caps != currentProtocolCapabilitiesV2() {
+		t.Fatalf("negotiateClientProtocol caps = 0x%x, want 0x%x", caps, currentProtocolCapabilitiesV2())
 	}
 	if err := <-serverDone; err != nil {
-		t.Fatalf("server hello handler returned error: %v", err)
+		t.Fatalf("server ChannelInit handler returned error: %v", err)
 	}
 }
 
 func TestNegotiateClientProtocolRejectsBadResponses(t *testing.T) {
+	oldToken := token
+	t.Cleanup(func() { token = oldToken })
+	token = "v2-reject-token"
 	tests := []struct {
-		name     string
-		response ProtocolHello
-		wantErr  string
+		name    string
+		reply   func(io.Writer) error
+		wantErr string
 	}{
 		{
-			name: "status message",
-			response: ProtocolHello{
-				Version: protocolVersion,
-				Status:  protocolStatusNoCommonCapabilities,
-				Message: "missing required protocol capabilities",
+			name: "reject message",
+			reply: func(w io.Writer) error {
+				return writeChannelReject(w, ChannelReject{Code: v2RejectMalformedFrame, Message: "bad init"})
 			},
-			wantErr: "协议协商失败: missing required protocol capabilities",
+			wantErr: "bad init",
 		},
 		{
-			name: "status code",
-			response: ProtocolHello{
-				Version: protocolVersion,
-				Status:  protocolStatusUnsupportedVersion,
+			name: "auth reject",
+			reply: func(w io.Writer) error {
+				return writeChannelReject(w, ChannelReject{Code: v2RejectAuthenticationFailed, Message: "auth proof invalid"})
 			},
-			wantErr: "协议协商失败: status=1",
+			wantErr: "认证失败",
 		},
 		{
-			name: "version mismatch",
-			response: ProtocolHello{
-				Version:      protocolVersion + 1,
-				Status:       protocolStatusOK,
-				Capabilities: currentProtocolCapabilities(),
-			},
-			wantErr: "协议版本不匹配",
-		},
-		{
-			name: "missing required capabilities",
-			response: ProtocolHello{
-				Version:      protocolVersion,
-				Status:       protocolStatusOK,
-				Capabilities: protocolCapabilityTCP,
+			name: "missing required capabilities accept",
+			reply: func(w io.Writer) error {
+				return writeChannelAccept(w, ChannelAccept{
+					Capabilities: protocolCapabilityTCP,
+					ServerNonce:  bytes.Repeat([]byte{2}, 32),
+					ServerTime:   time.Now().Unix(),
+				})
 			},
 			wantErr: "协议能力不足",
 		},
@@ -6487,7 +6162,6 @@ func TestNegotiateClientProtocolRejectsBadResponses(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			serverSession, clientSession := newProtocolNegotiationSmuxPair(t)
 			serverDone := make(chan error, 1)
-			response := tt.response
 			go func() {
 				stream, err := serverSession.AcceptStream()
 				if err != nil {
@@ -6499,26 +6173,22 @@ func TestNegotiateClientProtocolRejectsBadResponses(t *testing.T) {
 					serverDone <- err
 					return
 				}
-				if _, _, _, err := readSmuxOpenHeader(stream); err != nil {
+				if _, err := readChannelInit(stream, maxV2FrameSize); err != nil {
 					serverDone <- err
 					return
 				}
-				if _, err := readProtocolHello(stream); err != nil {
-					serverDone <- err
-					return
-				}
-				serverDone <- writeProtocolHello(stream, response)
+				serverDone <- tt.reply(stream)
 			}()
 
-			caps, legacy, err := negotiateClientProtocol(clientSession, time.Second)
+			caps, err := negotiateClientProtocol(clientSession, time.Second, uuid.NewString(), 1, "ws://example.com/tunnel")
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("negotiateClientProtocol err = %v, want containing %q", err, tt.wantErr)
 			}
-			if legacy || caps != 0 {
-				t.Fatalf("negotiateClientProtocol bad response = caps 0x%x legacy %v, want caps 0 legacy false", caps, legacy)
+			if caps != 0 {
+				t.Fatalf("negotiateClientProtocol bad response = caps 0x%x, want 0", caps)
 			}
 			if err := <-serverDone; err != nil {
-				t.Fatalf("server bad hello handler returned error: %v", err)
+				t.Fatalf("server bad v2 handler returned error: %v", err)
 			}
 		})
 	}
@@ -6620,7 +6290,10 @@ func TestECHPoolProbeChannelRTTUpdatesAndExits(t *testing.T) {
 	}
 }
 
-func TestNegotiateClientProtocolLegacyClose(t *testing.T) {
+func TestNegotiateClientProtocolRejectsClosedControlStream(t *testing.T) {
+	oldToken := token
+	t.Cleanup(func() { token = oldToken })
+	token = "v2-close-token"
 	serverSession, clientSession := newProtocolNegotiationSmuxPair(t)
 	serverDone := make(chan error, 1)
 	go func() {
@@ -6634,26 +6307,22 @@ func TestNegotiateClientProtocolLegacyClose(t *testing.T) {
 			serverDone <- err
 			return
 		}
-		if _, _, _, err := readSmuxOpenHeader(stream); err != nil {
-			serverDone <- err
-			return
-		}
-		if _, err := readProtocolHello(stream); err != nil {
+		if _, err := readChannelInit(stream, maxV2FrameSize); err != nil {
 			serverDone <- err
 			return
 		}
 		serverDone <- nil
 	}()
 
-	caps, legacy, err := negotiateClientProtocol(clientSession, time.Second)
-	if err != nil {
-		t.Fatalf("negotiateClientProtocol legacy close returned error: %v", err)
+	caps, err := negotiateClientProtocol(clientSession, time.Second, uuid.NewString(), 1, "ws://example.com/tunnel")
+	if err == nil {
+		t.Fatal("negotiateClientProtocol closed control stream returned nil error")
 	}
-	if !legacy || caps != 0 {
-		t.Fatalf("negotiateClientProtocol legacy close = caps 0x%x legacy %v, want caps 0 legacy true", caps, legacy)
+	if caps != 0 {
+		t.Fatalf("negotiateClientProtocol closed stream caps = 0x%x, want 0", caps)
 	}
 	if err := <-serverDone; err != nil {
-		t.Fatalf("server legacy handler returned error: %v", err)
+		t.Fatalf("server close handler returned error: %v", err)
 	}
 }
 
@@ -6692,7 +6361,7 @@ func TestECHPoolOpenUDPStreamWritesHeader(t *testing.T) {
 	pool := &ECHPool{
 		smuxConns:   []*smux.Session{clientSession},
 		channelRTT:  []int64{int64(5 * time.Millisecond)},
-		channelCaps: []uint32{currentProtocolCapabilities()},
+		channelCaps: []uint64{currentProtocolCapabilitiesV2()},
 	}
 	serverDone := make(chan error, 1)
 	go func() {
@@ -6715,7 +6384,7 @@ func TestECHPoolOpenUDPStreamWritesHeader(t *testing.T) {
 			serverDone <- fmt.Errorf("udp open header = kind %d strategy %d target %q", kind, strategy, target)
 			return
 		}
-		if err := writeUDPOpenSuccess(stream, currentProtocolCapabilities()); err != nil {
+		if err := writeUDPOpenSuccess(stream, currentProtocolCapabilitiesV2()); err != nil {
 			serverDone <- err
 			return
 		}
@@ -6749,7 +6418,7 @@ func TestECHPoolOpenUDPStreamStatusError(t *testing.T) {
 	pool := &ECHPool{
 		smuxConns:   []*smux.Session{clientSession},
 		channelRTT:  []int64{int64(5 * time.Millisecond)},
-		channelCaps: []uint32{protocolCapabilityUDPStatus},
+		channelCaps: []uint64{protocolCapabilityUDPStatus},
 	}
 	serverDone := make(chan error, 1)
 	go func() {
@@ -6792,7 +6461,7 @@ func TestECHPoolOpenUDPStreamStatusCodeError(t *testing.T) {
 	pool := &ECHPool{
 		smuxConns:   []*smux.Session{clientSession},
 		channelRTT:  []int64{int64(5 * time.Millisecond)},
-		channelCaps: []uint32{protocolCapabilityUDPStatus | protocolCapabilityOpenStatusCode},
+		channelCaps: []uint64{protocolCapabilityUDPStatus | protocolCapabilityOpenStatusCode},
 	}
 	serverDone := make(chan error, 1)
 	go func() {
@@ -6821,50 +6490,6 @@ func TestECHPoolOpenUDPStreamStatusCodeError(t *testing.T) {
 	}
 }
 
-func TestECHPoolOpenUDPStreamLegacyDoesNotWaitForStatus(t *testing.T) {
-	serverSession, clientSession := newProtocolNegotiationSmuxPair(t)
-	oldIPStrategy := ipStrategy
-	t.Cleanup(func() { ipStrategy = oldIPStrategy })
-	ipStrategy = IPStrategyDefault
-
-	pool := &ECHPool{
-		smuxConns:   []*smux.Session{clientSession},
-		channelRTT:  []int64{int64(5 * time.Millisecond)},
-		channelCaps: []uint32{0},
-	}
-	serverDone := make(chan error, 1)
-	go func() {
-		stream, err := serverSession.AcceptStream()
-		if err != nil {
-			serverDone <- err
-			return
-		}
-		defer stream.Close()
-		kind, strategy, target, err := readSmuxOpenHeader(stream)
-		if err != nil {
-			serverDone <- err
-			return
-		}
-		if kind != streamKindUDP || strategy != IPStrategyDefault || target != "example.com:53" {
-			serverDone <- fmt.Errorf("legacy UDP open header = kind %d strategy %d target %q", kind, strategy, target)
-			return
-		}
-		serverDone <- nil
-	}()
-
-	stream, chID, decision, err := pool.openUDPStream("example.com:53")
-	if err != nil {
-		t.Fatalf("openUDPStream legacy returned error: %v", err)
-	}
-	_ = stream.Close()
-	if chID != 1 || decision != 1 {
-		t.Fatalf("openUDPStream legacy chID=%d decision=%d, want 1/1", chID, decision)
-	}
-	if err := <-serverDone; err != nil {
-		t.Fatalf("server read legacy UDP header: %v", err)
-	}
-}
-
 func TestECHPoolOpenTCPStreamStatusError(t *testing.T) {
 	serverSession, clientSession := newProtocolNegotiationSmuxPair(t)
 	oldCfg := cfg
@@ -6879,7 +6504,7 @@ func TestECHPoolOpenTCPStreamStatusError(t *testing.T) {
 	pool := &ECHPool{
 		smuxConns:   []*smux.Session{clientSession},
 		channelRTT:  []int64{int64(5 * time.Millisecond)},
-		channelCaps: []uint32{protocolCapabilityTCPStatus},
+		channelCaps: []uint64{protocolCapabilityTCPStatus},
 	}
 	serverDone := make(chan error, 1)
 	go func() {
@@ -6930,7 +6555,7 @@ func TestECHPoolOpenTCPStreamStatusCodeError(t *testing.T) {
 	pool := &ECHPool{
 		smuxConns:   []*smux.Session{clientSession},
 		channelRTT:  []int64{int64(5 * time.Millisecond)},
-		channelCaps: []uint32{protocolCapabilityTCPStatus | protocolCapabilityOpenStatusCode},
+		channelCaps: []uint64{protocolCapabilityTCPStatus | protocolCapabilityOpenStatusCode},
 	}
 	serverDone := make(chan error, 1)
 	go func() {
@@ -6972,7 +6597,7 @@ func TestECHPoolOpenTCPStreamStatusOK(t *testing.T) {
 	pool := &ECHPool{
 		smuxConns:   []*smux.Session{clientSession},
 		channelRTT:  []int64{int64(5 * time.Millisecond)},
-		channelCaps: []uint32{protocolCapabilityTCPStatus},
+		channelCaps: []uint64{protocolCapabilityTCPStatus},
 	}
 	serverDone := make(chan error, 1)
 	go func() {
@@ -7025,7 +6650,7 @@ func TestECHPoolOpenTCPStreamStatusCodeOK(t *testing.T) {
 	pool := &ECHPool{
 		smuxConns:   []*smux.Session{clientSession},
 		channelRTT:  []int64{int64(5 * time.Millisecond)},
-		channelCaps: []uint32{protocolCapabilityTCPStatus | protocolCapabilityOpenStatusCode},
+		channelCaps: []uint64{protocolCapabilityTCPStatus | protocolCapabilityOpenStatusCode},
 	}
 	serverDone := make(chan error, 1)
 	go func() {
@@ -7060,76 +6685,6 @@ func TestECHPoolOpenTCPStreamStatusCodeOK(t *testing.T) {
 	}
 }
 
-func TestECHPoolOpenTCPStreamLegacyProxiesWithoutStatus(t *testing.T) {
-	serverSession, clientSession := newProtocolNegotiationSmuxPair(t)
-	oldIPStrategy := ipStrategy
-	t.Cleanup(func() { ipStrategy = oldIPStrategy })
-	ipStrategy = IPStrategyDefault
-
-	pool := &ECHPool{
-		smuxConns:   []*smux.Session{clientSession},
-		channelRTT:  []int64{int64(5 * time.Millisecond)},
-		channelCaps: []uint32{0},
-	}
-	serverDone := make(chan error, 1)
-	go func() {
-		stream, err := serverSession.AcceptStream()
-		if err != nil {
-			serverDone <- err
-			return
-		}
-		defer stream.Close()
-		if err := stream.SetDeadline(time.Now().Add(time.Second)); err != nil {
-			serverDone <- err
-			return
-		}
-		kind, strategy, target, err := readSmuxOpenHeader(stream)
-		if err != nil {
-			serverDone <- err
-			return
-		}
-		if kind != streamKindTCP || strategy != IPStrategyDefault || target != "legacy.example:443" {
-			serverDone <- fmt.Errorf("legacy tcp open header = kind %d strategy %d target %q", kind, strategy, target)
-			return
-		}
-		payload := make([]byte, len("legacy-request"))
-		if _, err := io.ReadFull(stream, payload); err != nil {
-			serverDone <- err
-			return
-		}
-		if string(payload) != "legacy-request" {
-			serverDone <- fmt.Errorf("legacy payload = %q", payload)
-			return
-		}
-		serverDone <- writeAll(stream, []byte("legacy-response"))
-	}()
-
-	stream, chID, decision, err := pool.openTCPStream("legacy.example:443")
-	if err != nil {
-		t.Fatalf("openTCPStream legacy returned error: %v", err)
-	}
-	defer stream.Close()
-	if chID != 1 || decision != 1 {
-		t.Fatalf("openTCPStream legacy chID=%d decision=%d, want 1/1", chID, decision)
-	}
-	if err := stream.SetDeadline(time.Now().Add(time.Second)); err != nil {
-		t.Fatalf("set legacy stream deadline: %v", err)
-	}
-	if err := writeAll(stream, []byte("legacy-request")); err != nil {
-		t.Fatalf("write legacy request bytes: %v", err)
-	}
-	response := make([]byte, len("legacy-response"))
-	if _, err := io.ReadFull(stream, response); err != nil {
-		t.Fatalf("read legacy response bytes: %v", err)
-	}
-	if string(response) != "legacy-response" {
-		t.Fatalf("legacy response = %q, want legacy-response", response)
-	}
-	if err := <-serverDone; err != nil {
-		t.Fatalf("server legacy TCP handler: %v", err)
-	}
-}
-
 func TestHandleLocalTCPProxiesOverSmux(t *testing.T) {
 	oldPool := echPool
 	oldCfg := cfg
@@ -7146,7 +6701,7 @@ func TestHandleLocalTCPProxiesOverSmux(t *testing.T) {
 	echPool = &ECHPool{
 		smuxConns:   []*smux.Session{clientSession},
 		channelRTT:  []int64{int64(5 * time.Millisecond)},
-		channelCaps: []uint32{protocolCapabilityTCPStatus},
+		channelCaps: []uint64{protocolCapabilityTCPStatus},
 	}
 
 	serverDone := make(chan error, 1)
@@ -7241,7 +6796,7 @@ func TestECHPoolOpenBestStreamSkipsNilSessions(t *testing.T) {
 	pool := &ECHPool{
 		smuxConns:   []*smux.Session{nil, clientSession},
 		channelRTT:  []int64{0, int64(5 * time.Millisecond)},
-		channelCaps: []uint32{0, protocolCapabilityTCPStatus},
+		channelCaps: []uint64{0, protocolCapabilityTCPStatus},
 	}
 
 	stream, chID, decision, caps, err := pool.openBestStream()
@@ -7263,7 +6818,7 @@ func TestECHPoolOpenBestStreamRoundRobinNearRTT(t *testing.T) {
 	pool := &ECHPool{
 		smuxConns:   []*smux.Session{clientSession1, clientSession2},
 		channelRTT:  []int64{int64(5 * time.Millisecond), int64(8 * time.Millisecond)},
-		channelCaps: []uint32{protocolCapabilityTCP, protocolCapabilityUDP},
+		channelCaps: []uint64{protocolCapabilityTCP, protocolCapabilityUDP},
 	}
 
 	stream, chID, decision, caps, err := pool.openBestStream()
@@ -7307,26 +6862,6 @@ func expectAcceptedSmuxStream(t *testing.T, sess *smux.Session) func() {
 		case <-time.After(time.Second):
 			t.Fatal("timed out waiting for accepted smux stream")
 		}
-	}
-}
-
-func TestIsLegacyProtocolHelloError(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{name: "EOF", err: io.EOF, want: true},
-		{name: "unexpected EOF", err: io.ErrUnexpectedEOF, want: true},
-		{name: "timeout", err: protocolTimeoutTestError{}, want: true},
-		{name: "ordinary error", err: errors.New("bad magic"), want: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := isLegacyProtocolHelloError(tt.err); got != tt.want {
-				t.Fatalf("isLegacyProtocolHelloError(%v) = %v, want %v", tt.err, got, tt.want)
-			}
-		})
 	}
 }
 
@@ -7589,9 +7124,6 @@ func TestProtocolWritersRejectShortWritesWithoutError(t *testing.T) {
 		name string
 		run  func(io.Writer) error
 	}{
-		{name: "protocol hello", run: func(w io.Writer) error {
-			return writeProtocolHello(w, ProtocolHello{Version: protocolVersion, Status: protocolStatusOK, Capabilities: currentProtocolCapabilities(), Message: "ok"})
-		}},
 		{name: "tcp open status", run: func(w io.Writer) error {
 			return writeTCPOpenStatus(w, tcpOpenStatusError, "dial failed")
 		}},
@@ -7782,26 +7314,6 @@ func FuzzReadSmuxOpenHeader(f *testing.F) {
 		var buf bytes.Buffer
 		if err := writeSmuxOpenHeader(&buf, kind, strategy, target); err != nil {
 			t.Fatalf("writeSmuxOpenHeader after successful read returned error: %v", err)
-		}
-	})
-}
-
-func FuzzReadProtocolHello(f *testing.F) {
-	f.Add([]byte{})
-	var ok bytes.Buffer
-	if err := writeProtocolHello(&ok, currentProtocolHello()); err != nil {
-		f.Fatalf("seed protocol hello: %v", err)
-	}
-	f.Add(ok.Bytes())
-	f.Add([]byte{'X', 'T', 'U', 'N', protocolVersion, protocolStatusOK, 0, 1, 0, 0, 0, 1, 'x'})
-	f.Fuzz(func(t *testing.T, raw []byte) {
-		hello, err := readProtocolHello(bytes.NewReader(raw))
-		if err != nil {
-			return
-		}
-		var buf bytes.Buffer
-		if err := writeProtocolHello(&buf, hello); err != nil {
-			t.Fatalf("writeProtocolHello after successful read returned error: %v", err)
 		}
 	})
 }
@@ -8355,7 +7867,7 @@ func TestUDPAssociationLoopSendsParsedPacketOverSmux(t *testing.T) {
 	pool := &ECHPool{
 		smuxConns:   []*smux.Session{clientSession},
 		channelRTT:  []int64{int64(5 * time.Millisecond)},
-		channelCaps: []uint32{currentProtocolCapabilities()},
+		channelCaps: []uint64{currentProtocolCapabilitiesV2()},
 	}
 	assoc := &UDPAssociation{
 		id:          3,
@@ -8387,7 +7899,7 @@ func TestUDPAssociationLoopSendsParsedPacketOverSmux(t *testing.T) {
 			serverDone <- fmt.Errorf("UDP association header = kind %d strategy %d target %q", kind, strategy, target)
 			return
 		}
-		if err := writeUDPOpenSuccess(stream, currentProtocolCapabilities()); err != nil {
+		if err := writeUDPOpenSuccess(stream, currentProtocolCapabilitiesV2()); err != nil {
 			serverDone <- err
 			return
 		}

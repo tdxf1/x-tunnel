@@ -4,9 +4,9 @@
 
 Use `-token` on both client and server whenever the WebSocket listener is reachable by anything outside a trusted test environment.
 
-The token is sent as a WebSocket subprotocol value, so it must be a valid HTTP token: ASCII letters, digits, and token-safe punctuation such as `-`, `_`, `.`, and `~`. Whitespace, commas, slashes, control characters, and non-ASCII characters are rejected at startup.
+The token is not sent in the WebSocket URL, query string, or `Sec-WebSocket-Protocol`. Current builds use v2 `ChannelInit`: the token derives an HMAC key and the client sends a proof over session metadata, nonce, timestamp, server name, and path.
 
-This is bearer-token authentication. Anyone who has the token can connect unless source CIDR filtering also blocks them.
+This is still pre-shared-secret authentication. Anyone who has the token can produce a valid proof unless source CIDR filtering or mTLS also blocks them.
 
 ## Source Filtering
 
@@ -66,7 +66,7 @@ Use `-max-clients` and `-max-streams` on the server to cap active client session
   -max-streams 256
 ```
 
-The default `0` preserves legacy behavior and means unlimited. `-max-clients` counts active `client_id` sessions; existing sessions may still open additional WebSocket channels. `-max-streams` counts all active streams for the same `client_id` across that client's WebSocket channels, including short-lived hello and ping streams. JSON config accepts `max_clients`/`max-clients` and `max_streams`/`max-streams`.
+The default `0` means unlimited. `-max-clients` counts active v2 `SessionID` sessions; existing sessions may still open additional WebSocket channels. `-max-streams` counts all active TCP/UDP/Ping streams for the same session across that client's WebSocket channels. JSON config accepts `max_clients`/`max-clients` and `max_streams`/`max-streams`.
 
 ## TLS, ECH, and `-insecure`
 
@@ -84,11 +84,13 @@ Default timeouts are conservative for local and small remote deployments, but ex
 - `-ws-handshake-timeout`: WebSocket handshake timeout.
 - `-reconnect-delay`, `-reconnect-max-delay`, `-reconnect-jitter`: client reconnect backoff. Set `-reconnect-jitter 0s` to disable jitter.
 - `-rtt-timeout`: channel RTT probe timeout.
+- `-auth-skew`: accepted v2 ChannelInit timestamp skew. Default `5m`.
+- `-preauth-timeout`: deadline for the pre-auth WebSocket/smux/ChannelInit stage. Default `5s`.
 - `-dns-timeout` and `-ech-retry-delay`: ECH lookup timeout/retry behavior.
 - `-udp-read-timeout`: server UDP relay read polling timeout.
 - `-shutdown-timeout`: graceful HTTP server shutdown timeout.
 
-JSON config uses underscore keys such as `dial_timeout`, `ws_handshake_timeout`, and `shutdown_timeout`.
+JSON config uses underscore keys such as `dial_timeout`, `ws_handshake_timeout`, `auth_skew`, `preauth_timeout`, and `shutdown_timeout`.
 
 ## mTLS Client Authentication
 
@@ -143,8 +145,8 @@ For local development, keep the listener on loopback:
 Release images are published to GHCR from version tags:
 
 ```bash
-docker pull ghcr.io/6kmfi6hp/x-tunnel:v0.1.0
-docker run --rm ghcr.io/6kmfi6hp/x-tunnel:v0.1.0 -version
+docker pull ghcr.io/6kmfi6hp/x-tunnel:v0.2.0
+docker run --rm ghcr.io/6kmfi6hp/x-tunnel:v0.2.0 -version
 ```
 
 The image runs as a non-root user. For exposed deployments, prefer mapping a
@@ -154,7 +156,7 @@ reverse proxy on the host:
 ```bash
 docker run -d --name x-tunnel-server \
   -p 127.0.0.1:18080:18080 \
-  ghcr.io/6kmfi6hp/x-tunnel:v0.1.0 \
+  ghcr.io/6kmfi6hp/x-tunnel:v0.2.0 \
   -l ws://0.0.0.0:18080/tunnel \
   -token "$TOKEN" \
   -cidr 203.0.113.0/24 \

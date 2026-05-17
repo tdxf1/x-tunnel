@@ -11,8 +11,8 @@ direction for future x-tunnel changes.
   owns flags, JSON config loading, signal handling, local listeners, server
   session registry, smux lifecycle, metrics wiring, TLS/ECH setup, and logging.
 - `internal/wire`: byte-level x-tunnel protocol encoding and decoding. This
-  includes smux open headers, protocol hello frames, TCP/UDP open status frames,
-  UDP chunks, and full-write helpers.
+  includes smux open headers, v2 ChannelInit/Accept/Reject control frames,
+  TCP/UDP open status frames, UDP chunks, and full-write helpers.
 - `internal/netaddr`: shared host, hostname, and host:port validation helpers.
 
 ## Dependency Direction

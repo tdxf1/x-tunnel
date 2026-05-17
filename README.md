@@ -15,7 +15,7 @@ Build metadata can be injected with `-ldflags`:
 
 ```bash
 go build -ldflags "\
-  -X main.buildVersion=0.1.0 \
+  -X main.buildVersion=0.2.0 \
   -X main.buildCommit=$(git rev-parse --short HEAD) \
   -X main.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   -o x-tunnel ./cmd/x-tunnel
@@ -24,14 +24,14 @@ go build -ldflags "\
 Or use the build script:
 
 ```bash
-VERSION=0.1.0 OUT=./x-tunnel ./scripts/build.sh
+VERSION=0.2.0 OUT=./x-tunnel ./scripts/build.sh
 ./x-tunnel -version
 ```
 
 Create cross-platform release artifacts:
 
 ```bash
-VERSION=0.1.0 ./scripts/release.sh
+VERSION=0.2.0 ./scripts/release.sh
 cat dist/SHA256SUMS
 ```
 
@@ -47,14 +47,14 @@ docker run --rm x-tunnel:local -version
 Tagged releases publish multi-architecture images to GHCR:
 
 ```bash
-docker pull ghcr.io/6kmfi6hp/x-tunnel:v0.1.0
-docker run --rm ghcr.io/6kmfi6hp/x-tunnel:v0.1.0 -version
+docker pull ghcr.io/6kmfi6hp/x-tunnel:v0.2.0
+docker run --rm ghcr.io/6kmfi6hp/x-tunnel:v0.2.0 -version
 ```
 
 Run a loopback-only server in a container:
 
 ```bash
-docker run --rm -p 127.0.0.1:18080:18080 ghcr.io/6kmfi6hp/x-tunnel:v0.1.0 \
+docker run --rm -p 127.0.0.1:18080:18080 ghcr.io/6kmfi6hp/x-tunnel:v0.2.0 \
   -l ws://0.0.0.0:18080/tunnel \
   -token local-test-token \
   -cidr 127.0.0.1/32
@@ -65,8 +65,8 @@ docker run --rm -p 127.0.0.1:18080:18080 ghcr.io/6kmfi6hp/x-tunnel:v0.1.0 \
 Push a version tag to publish GitHub Release assets and GHCR images:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 The release workflow verifies formatting, `go vet`, tests, race tests, and a
@@ -124,7 +124,7 @@ curl http://127.0.0.1:12000/
   -max-streams 256
 ```
 
-See [docs/deployment.md](docs/deployment.md) for token limits, source filtering, target filtering, and TLS/ECH notes.
+See [docs/deployment.md](docs/deployment.md) for v2 token authentication, source filtering, target filtering, and TLS/ECH notes.
 
 Require client certificates with mTLS:
 
@@ -156,7 +156,7 @@ curl http://127.0.0.1:9090/metrics
 Metrics include:
 
 - Server gauges: `x_tunnel_server_sessions`, `x_tunnel_server_channels`, `x_tunnel_server_active_streams`.
-- Server counters: source CIDR, token auth, client-limit, stream-limit, target-policy, unsupported-stream, and protocol-negotiation outcomes.
+- Server counters: source CIDR, v2 auth, client-limit, stream-limit, target-policy, unsupported-stream, and protocol-negotiation outcomes.
 - UDP counters/gauges: total and active SOCKS5 UDP associations.
 - Client counters: reconnects, protocol negotiation outcomes, and RTT probe failures.
 - Client channel gauges: `x_tunnel_client_channel_up{channel="N"}`, `x_tunnel_client_channel_rtt_seconds{channel="N"}`, and `x_tunnel_client_channel_capabilities{channel="N"}`.
@@ -181,6 +181,8 @@ See [examples](examples) for local, hardened server, and WSS mTLS templates.
   "max_streams": 128,
   "dial_timeout": "5s",
   "reconnect_max_delay": "30s",
+  "auth_skew": "5m",
+  "preauth_timeout": "5s",
   "metrics": "127.0.0.1:9090"
 }
 ```
@@ -190,14 +192,15 @@ See [examples](examples) for local, hardened server, and WSS mTLS templates.
 ```
 
 Operational timeouts can be tuned with duration flags such as `-dial-timeout`,
-`-ws-handshake-timeout`, `-reconnect-delay`, and `-shutdown-timeout`. JSON config
-uses underscore keys, for example `"dial_timeout": "5s"`.
+`-ws-handshake-timeout`, `-reconnect-delay`, `-auth-skew`,
+`-preauth-timeout`, and `-shutdown-timeout`. JSON config uses underscore keys,
+for example `"dial_timeout": "5s"`.
 
 UDP block ports from `-block` must be comma-separated integers in `1-65535`; invalid entries fail startup instead of being ignored.
 
 ## Troubleshooting
 
-- `认证失败：Token 不匹配或未提供`: client and server `-token` values differ, or the token contains characters that are not valid WebSocket subprotocol token characters.
+- `认证失败`: client and server `-token` values differ, the v2 HMAC proof is invalid, or the ChannelInit timestamp is outside the configured skew.
 - `DNS 查询失败` or `未找到 ECH 参数`: the configured `-dns` resolver could not return HTTPS/ECH records for `-ech`. Use `-fallback` only when standard TLS without ECH is acceptable.
 - `无可用 smux 通道`: the local listener accepted a connection before any WebSocket/smux channel was ready, or every channel is reconnecting.
 - `TCP 拒绝` or `UDP 拒绝`: the target was malformed or blocked by `-allow-target`, `-deny-target`, `-allow-host`, or `-deny-host`.

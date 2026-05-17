@@ -13,8 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 func runHTTPListener(ctx context.Context, addr string) {
@@ -104,15 +102,6 @@ func handleHTTP(c net.Conn, cfgp *ProxyConfig) {
 
 func writeHTTPProxyResponse(w io.Writer, response string) error {
 	return writeAll(w, []byte(response))
-}
-
-func webSocketRequestHasToken(r *http.Request, want string) bool {
-	for _, offered := range websocket.Subprotocols(r) {
-		if subtle.ConstantTimeCompare([]byte(offered), []byte(want)) == 1 {
-			return true
-		}
-	}
-	return false
 }
 
 func validHTTPProxyBasicAuth(auth, username, password string) bool {

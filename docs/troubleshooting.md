@@ -4,13 +4,14 @@
 
 Symptoms:
 
-- Client logs `认证失败：Token 不匹配或未提供`.
-- Server logs `Token 认证失败`.
+- Client logs `认证失败` or `协议协商失败`.
+- Server logs `v2 认证失败`, `v2 ChannelInit 时间戳拒绝`, or `v2 ChannelInit nonce 重放`.
 
 Checks:
 
 - Ensure client and server use the same `-token`.
-- Ensure the token has no spaces, commas, slashes, quotes, non-ASCII characters, or shell-expanded characters.
+- Ensure both sides are using the current v2-only build.
+- Check that system clocks are within `-auth-skew`.
 - Re-run `x-tunnel -version` to confirm both sides are the expected build.
 - If `-metrics` is enabled, check `x_tunnel_server_auth_rejections_total`.
 
@@ -46,8 +47,7 @@ Checks:
 Symptoms:
 
 - Server logs `TCP 拒绝` or `UDP 拒绝`.
-- New clients with negotiated TCPStatus map TCP target failures to local SOCKS5 failure replies, HTTP `403 Forbidden` for structured policy denials, HTTP `502 Bad Gateway` for other remote open failures, or a closed TCP-forward connection.
-- Legacy channels may still show an empty reply or closed stream.
+- v2 clients map TCP target failures to local SOCKS5 failure replies, HTTP `403 Forbidden` for structured policy denials, HTTP `502 Bad Gateway` for other remote open failures, or a closed TCP-forward connection.
 
 Checks:
 

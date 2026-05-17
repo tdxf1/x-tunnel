@@ -54,8 +54,9 @@ func Main() {
 	// ================= 服务端模式 =================
 	if startup.IsServer {
 		if token == "" {
-			log.Printf("[服务端] 警告: 未配置 token，WebSocket 连接不会进行令牌认证")
+			log.Printf("[服务端] 警告: 未配置 token，v2 ChannelInit 不会校验 HMAC proof")
 		}
+		log.Printf("[服务端] protocol=v2-only")
 		targetPolicy = startup.TargetPolicy
 		socks5Config = startup.SOCKS5Config
 		if socks5Config != nil {
@@ -72,8 +73,9 @@ func Main() {
 
 	// ================= 客户端模式 =================
 	if token == "" {
-		log.Printf("[客户端] 警告: 未配置 token，将尝试连接未启用令牌认证的服务端")
+		log.Printf("[客户端] 警告: 未配置 token，将发送空 token 的 v2 ChannelInit proof")
 	}
+	log.Printf("[客户端] protocol=v2-only")
 	fallback = startup.Client.Fallback
 	udpBlockPorts = startup.Client.UDPBlockPorts
 

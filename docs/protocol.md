@@ -1,8 +1,11 @@
 # x-tunnel Protocol Specification
 
-Status: current implementation snapshot.
+Status: v2-only current implementation snapshot.
 
-This document describes the wire behavior implemented in `internal/wire` and used by the `cmd/x-tunnel` binary. It is intentionally conservative: any future change to these bytes must either remain backward-compatible or introduce explicit version/capability negotiation.
+This document describes the wire behavior implemented in `internal/wire` and
+used by `cmd/x-tunnel`. Current builds do not negotiate, accept, or downgrade to
+the previous `XTUN` Hello protocol. A peer that cannot complete v2
+`ChannelInit` is rejected before any client session is created.
 
 Standards references used for local proxy behavior:
 
@@ -14,8 +17,11 @@ Standards references used for local proxy behavior:
 
 x-tunnel has two runtime roles:
 
-- Client mode: starts local listeners and dials a remote WebSocket server.
-- Server mode: accepts WebSocket connections, opens smux streams, and dials target TCP/UDP endpoints directly or through an upstream SOCKS5 proxy.
+- Client mode: starts local SOCKS5, HTTP proxy, and TCP forward listeners, then
+  dials a remote WebSocket server.
+- Server mode: accepts WebSocket connections, authenticates v2 channels, opens
+  smux streams, and dials target TCP/UDP endpoints directly or through an
+  upstream SOCKS5 proxy.
 
 The transport stack is:
 
@@ -36,56 +42,119 @@ Supported schemes:
 - `ws://`
 - `wss://`
 
-For `wss://`, the client uses TLS 1.3. ECH can be enabled by default and disabled with fallback mode. `-insecure` disables certificate verification for standard TLS fallback behavior.
+For `wss://`, the client uses TLS 1.3. ECH can be enabled by default and
+disabled with fallback mode. `-insecure` disables certificate verification for
+standard TLS fallback behavior and should not be used in production.
 
-ECH configuration is loaded from HTTPS DNS records before the client dials a non-fallback `wss://` server. The `-dns` resolver may be an HTTP/HTTPS DoH URL or a UDP DNS `host[:port]`; resolver authorities must be valid hostnames or IP literals, with valid ports when present, and DoH URLs must not include userinfo. DNS responses are accepted only when they are actual responses (`QR=1`) with `RCODE=0`. UDP DNS reads use the DNS message size limit, matching DoH response handling, so larger HTTPS/ECH records are not truncated at small transport buffers.
+The WebSocket request does not carry protocol metadata:
 
-Authentication, when configured, uses the `Sec-WebSocket-Protocol` header:
+- no `client_id` query parameter;
+- no `channel_id` query parameter;
+- no token in `Sec-WebSocket-Protocol`.
 
-```text
-Sec-WebSocket-Protocol: <token>
-```
+Authentication happens after the WebSocket upgrade, on the first smux stream,
+using v2 `ChannelInit`.
 
-Current limitations:
+The client also sets a generic WebSocket request `User-Agent` instead of
+leaving Go's default `Go-http-client` value on the upgrade request. This is
+request-shape hygiene only; it does not carry protocol state and does not change
+the TCP/UDP data path.
 
-- The token is a bearer secret and is not a full authentication protocol.
-- The token is accepted as an exact value in the offered WebSocket subprotocol list.
-- There is no separate session-auth frame after WebSocket upgrade.
+## 3. v2 Channel Authentication
 
-## 3. Client Session and Channels
-
-Each client process generates one `client_id` UUID. Each WebSocket channel is dialed with query parameters:
-
-```text
-client_id=<uuid>
-channel_id=<1-based integer>
-```
-
-The server groups channels by `client_id`. If a channel connects with an existing `channel_id`, the old WebSocket connection for that channel is closed and replaced.
-
-Each WebSocket channel carries one smux session.
-
-On new builds, the client opens one hello control stream immediately after smux session creation. If the server responds, the session has explicit version and capability negotiation. If an old server closes or times out the hello stream, the client logs legacy mode and keeps the existing data path available.
-
-## 4. smux Stream Open Header
-
-Every new smux stream starts with a fixed 4-byte header followed by an optional target string:
+Each WebSocket channel carries one smux session. Immediately after smux setup,
+the client opens the first stream and sends a v2 frame:
 
 ```text
-0                   1                   2                   3
-+-------------------+-------------------+-------------------+
-| kind              | ip_strategy       | target_len (BE16) |
-+-------------------+-------------------+-------------------+
-| target bytes ...                                      |
-+-------------------------------------------------------+
+frame_type (u8) | version (u8) | flags (BE16) | body_len (BE32) | body ...
 ```
 
-Fields:
+Current frame values:
 
-- `kind`: stream type.
-- `ip_strategy`: requested target IP selection strategy.
-- `target_len`: big-endian uint16 length of the following target string.
-- `target`: UTF-8 string, usually `host:port`.
+| Type | Name |
+| --- | --- |
+| `1` | ChannelInit |
+| `2` | ChannelAccept |
+| `3` | ChannelReject |
+
+The current v2 frame version is `2`. `body_len` is capped by
+`MaxV2FrameSize` (`16 KiB`).
+
+Frame bodies are TLV records:
+
+```text
+record_type (BE16) | record_len (BE16) | value ...
+```
+
+Rules:
+
+- Record types with the high bit set are critical. Unknown critical records
+  reject the frame.
+- Unknown non-critical records are ignored.
+- Duplicate record types are rejected.
+- Required record lengths are validated exactly.
+
+`ChannelInit` records:
+
+| Type | Name | Required | Value |
+| --- | --- | --- | --- |
+| `0x8001` | SessionID | yes | 16 bytes. Derived from the client UUID. |
+| `0x8002` | ChannelID | yes | BE32, positive. |
+| `0x8003` | ClientNonce | yes | 32 random bytes. |
+| `0x8004` | Timestamp | yes | BE64 Unix seconds. |
+| `0x8005` | Capabilities | yes | BE64 capability bitset. |
+| `0x8006` | AuthProof | yes | HMAC-SHA256 proof. |
+
+The proof is:
+
+```text
+auth_key = HKDF-SHA256(token, salt="x-tunnel-v2-auth", info=server_name)
+proof = HMAC-SHA256(auth_key, ChannelInit transcript)
+```
+
+The transcript includes frame type/version, session ID, channel ID, client
+nonce, timestamp, capabilities, server name, and request path. The token itself
+is never sent over WebSocket headers, URL query parameters, or TLV records.
+
+Server validation order:
+
+1. Parse `ChannelInit`.
+2. Check timestamp skew (`-auth-skew`, default `5m`).
+3. Verify HMAC proof.
+4. Reject replayed `(SessionID, ChannelID, ClientNonce)` values.
+5. Negotiate required capabilities.
+6. Enforce `-max-clients`.
+7. Reply with `ChannelAccept` and only then start accepting data streams.
+
+The pre-auth stage is bounded by `-preauth-timeout` (default `5s`).
+
+## 4. v2 Capabilities
+
+Current baseline capability bits:
+
+| Bit | Name | Meaning |
+| --- | --- | --- |
+| `1 << 0` | TCP | TCP streams are supported. |
+| `1 << 1` | UDP | UDP streams are supported. |
+| `1 << 2` | Ping | Ping streams are supported. |
+| `1 << 3` | IPStrategy | IP strategy byte is understood. |
+| `1 << 4` | TCPStatus | TCP streams begin with an open-status frame. |
+| `1 << 5` | UDPStatus | UDP streams begin with an open-status frame. |
+| `1 << 6` | OpenStatusCode | Status frames include a structured error code byte. |
+| `1 << 9` | ChannelStats | Channel metrics expose negotiated capabilities. |
+
+The v2 runtime requires `TCP`, `Ping`, `TCPStatus`, and `OpenStatusCode`.
+Current builds advertise the full baseline above. There is no v1 fallback when
+required v2 capabilities are missing.
+
+## 5. smux Stream Open Header
+
+After v2 channel authentication, every data stream starts with the compact
+open header:
+
+```text
+kind (u8) | ip_strategy (u8) | target_len (BE16) | target bytes ...
+```
 
 Stream kinds:
 
@@ -94,7 +163,9 @@ Stream kinds:
 | `1` | TCP | Open a TCP proxy stream to `target`. |
 | `2` | UDP | Open a UDP relay stream to `target`. |
 | `3` | Ping | Echo an 8-byte ping payload. |
-| `4` | Hello | Negotiate protocol version and capabilities for the smux session. |
+
+Unknown stream kinds are logged, counted in
+`x_tunnel_server_unsupported_streams_total`, and closed.
 
 IP strategies:
 
@@ -109,74 +180,15 @@ IP strategies:
 Limits:
 
 - `target_len <= 65535`.
-- The current TCP/UDP/Ping stream open header remains unchanged for compatibility.
-- TCP and UDP streams reject `ip_strategy` values outside `0..4` before dialing or opening a relay.
-- Unknown stream kinds are treated as unsupported: the server logs the kind, increments `x_tunnel_server_unsupported_streams_total`, and closes the stream.
+- TCP and UDP streams reject `ip_strategy` values outside `0..4`.
+- TCP/UDP targets must be valid `host:port` authorities.
 
-## 5. Protocol Hello Stream
+## 6. TCP Streams
 
-The hello stream uses `streamKindHello` (`4`) with an empty target in the existing smux open header. After that header, the client writes a protocol hello frame:
-
-```text
-0                   1                   2                   3
-+-------------------+-------------------+-------------------+
-| magic "XTUN"                                          |
-+-------------------+-------------------+-------------------+
-| version           | status            | msg_len (BE16)    |
-+-------------------+-------------------+-------------------+
-| capabilities (BE32)                                  |
-+-------------------------------------------------------+
-| message bytes ...                                    |
-+-------------------------------------------------------+
-```
-
-Fields:
-
-- `magic`: fixed ASCII string `XTUN`.
-- `version`: current protocol version, currently `1`.
-- `status`: `0` for OK, non-zero for rejection responses.
-- `msg_len`: big-endian uint16 message length.
-- `capabilities`: big-endian uint32 capability flags.
-- `message`: optional UTF-8 diagnostic message.
-
-Status values:
-
-| Value | Name | Meaning |
-| --- | --- | --- |
-| `0` | OK | Version/capabilities accepted. |
-| `1` | UnsupportedVersion | Peer does not support the requested version. |
-| `2` | NoCommonCapabilities | Peer is missing required capabilities for this protocol version. |
-
-Capability flags:
-
-| Bit | Name | Meaning |
-| --- | --- | --- |
-| `1 << 0` | TCP | TCP streams are supported. |
-| `1 << 1` | UDP | UDP streams are supported. |
-| `1 << 2` | Ping | Ping streams are supported. |
-| `1 << 3` | IPStrategy | IP strategy byte is understood. |
-| `1 << 4` | TCPStatus | TCP streams begin with an open-status frame before proxied bytes. |
-| `1 << 5` | UDPStatus | UDP streams begin with an open-status frame before UDP chunks. |
-| `1 << 6` | OpenStatusCode | TCPStatus/UDPStatus frames include a structured open error code byte. |
-
-Current client behavior:
-
-- Requires negotiated TCP and Ping capabilities.
-- Advertises UDP, IPStrategy, TCPStatus, UDPStatus, and OpenStatusCode support. TCPStatus and UDPStatus add per-stream open-status frames only when both peers negotiate them; OpenStatusCode changes only the status-frame shape when both peers negotiate it. Legacy channels keep the previous close-only behavior.
-- Treats EOF, unexpected EOF, or timeout while waiting for hello as legacy server behavior.
-- Fails the channel cleanly on explicit rejection or insufficient capabilities.
-
-## 6. TCP Stream
-
-After a TCP stream open header, legacy peers proxy raw bytes until either direction exits. The implementation then closes both the target connection and the smux stream.
-
-When both peers negotiate `TCPStatus`, the server first writes a TCP open-status frame:
+After a TCP open header, the server validates target syntax, target policy, and
+then dials the target. Before proxied bytes begin, it writes:
 
 ```text
-legacy TCPStatus:
-status (u8) | msg_len (BE16) | message bytes ...
-
-TCPStatus + OpenStatusCode:
 status (u8) | code (u8) | msg_len (BE16) | message bytes ...
 ```
 
@@ -184,158 +196,124 @@ Status values:
 
 | Value | Name | Meaning |
 | --- | --- | --- |
-| `0` | OK | Target policy and remote TCP dial succeeded. Proxied bytes follow. |
-| `1` | Error | Target policy or remote TCP dial failed. The message is diagnostic text and the stream closes. |
+| `0` | OK | Target policy and remote TCP dial succeeded. |
+| `1` | Error | Target validation, policy, dial, or resource-limit failure. |
 
-When OpenStatusCode is negotiated, `code` is:
+Structured codes:
 
 | Value | Name | Meaning |
 | --- | --- | --- |
-| `0` | None | No structured code; used for OK and compatibility fallback. |
+| `0` | None | No structured error. Used for OK. |
 | `1` | BadTarget | Invalid IP strategy or malformed target. |
 | `2` | PolicyDenied | Target policy rejected the target. |
-| `3` | DialFailed | Remote TCP dial, UDP resolve/listen, or upstream SOCKS5 relay setup failed. |
-| `4` | ResourceLimit | The server rejected the stream because a resource limit was reached. |
+| `3` | DialFailed | Remote TCP dial or upstream setup failed. |
+| `4` | ResourceLimit | Server stream limit was reached. |
 
-New clients wait for this status before returning local SOCKS5 or HTTP CONNECT success. Legacy channels do not wait for a status frame and keep the older best-effort behavior.
+Local mapping:
 
-Local failure mapping with TCPStatus:
+- SOCKS5 CONNECT maps `PolicyDenied` to reply `0x02`; other remote open errors
+  map to `0x05`.
+- HTTP proxy and CONNECT map `PolicyDenied` to `403 Forbidden`; other remote
+  open errors map to `502 Bad Gateway`.
+- TCP forward listeners close the local connection on remote open error.
 
-- SOCKS5 CONNECT returns a non-success SOCKS5 reply when the remote server rejects the target or cannot dial it. With OpenStatusCode, `PolicyDenied` maps to SOCKS5 reply `0x02` (connection not allowed by ruleset); other remote open failures still map to general failure `0x05`.
-- HTTP proxy and CONNECT requests return `403 Forbidden` for structured `PolicyDenied` failures, and `502 Bad Gateway` for legacy/unstructured remote open failures or dial/setup failures.
-- TCP forward listeners close the local connection when the remote open status is an error.
-- Malformed TCP stream targets are rejected before target-policy checks and use the same TCPStatus error path when available.
+After OK, TCP bytes are copied bidirectionally until either side exits, then
+both connections are closed.
 
-## 7. Ping Stream
+## 7. UDP Streams
 
-A ping stream has:
+A UDP stream is bound to one target. The local SOCKS5 UDP association binds to
+the first requested `DST.ADDR:DST.PORT`; later packets for different targets are
+dropped instead of being sent over the same stream.
+
+The server writes the same status-code frame shape as TCP before UDP chunks
+begin. After OK, client-to-server datagrams are sent as chunks:
+
+```text
+chunk_len (BE16) | payload bytes ...
+```
+
+Server-to-client UDP replies include the source address string and payload:
+
+```text
+addr_len (BE16) | payload_len (BE16) | addr bytes ... | payload bytes ...
+```
+
+Limits:
+
+- `chunk_len <= 65535`.
+- `addr_len <= 65535`.
+- `payload_len <= 65535`.
+- UDP reply addresses must be valid non-empty `host:port` values with ports in
+  `1..65535`.
+
+## 8. Ping Streams
+
+A ping stream uses:
 
 ```text
 stream open header(kind=3, ip_strategy=0, target="")
 8-byte payload
 ```
 
-The server echoes the exact 8-byte payload. The client measures RTT around write/read completion.
+The server echoes the exact 8-byte payload. The client measures RTT around
+write/read completion.
 
-## 8. UDP Stream
+## 9. Local SOCKS5 and HTTP Proxy Behavior
 
-A UDP stream is opened for one current target. The local SOCKS5 UDP association binds to the first requested `DST.ADDR:DST.PORT`; later packets for a different target are dropped instead of being sent over the already-bound stream.
+The local SOCKS5 command and UDP packet parsing follows RFC 1928 for supported
+commands and address encodings, with x-tunnel target validation before remote
+streams are opened. SOCKS5 UDP request packets must use `RSV=0x0000`,
+`FRAG=0`, and IPv4/domain/IPv6 address forms.
 
-When both peers negotiate `UDPStatus`, the server first writes a UDP open-status frame using the same status-frame shape as TCPStatus:
+The local HTTP proxy accepts:
 
-```text
-legacy UDPStatus:
-status (u8) | msg_len (BE16) | message bytes ...
+- `CONNECT host:port HTTP/1.1`, defaulting missing ports to `443`;
+- absolute-form `http://host[:port]/path` requests, defaulting missing ports to
+  `80`;
+- origin-form requests with a valid `Host` header, defaulting missing ports to
+  `80`.
 
-UDPStatus + OpenStatusCode:
-status (u8) | code (u8) | msg_len (BE16) | message bytes ...
-```
+Non-CONNECT absolute-form requests are accepted only with the `http` scheme.
+Malformed authorities, URL userinfo, invalid DNS hostnames, and mismatched
+`Host`/URL authorities are rejected with `400 Bad Request`. Hop-by-hop headers
+are stripped before forwarding, and forwarded non-CONNECT requests append
+`Via: 1.1 x-tunnel`.
 
-Status values:
+Successful CONNECT returns `HTTP/1.1 200 Connection Established` without
+`Content-Length` or `Transfer-Encoding`, then switches to opaque tunnel bytes.
 
-| Value | Name | Meaning |
-| --- | --- | --- |
-| `0` | OK | Target policy and UDP relay setup succeeded. UDP chunks follow. |
-| `1` | Error | Target policy, target parsing, or UDP relay setup failed. The message is diagnostic text and the stream closes. |
+## 10. Risk Map
 
-When OpenStatusCode is negotiated, UDP uses the same code values defined for TCPStatus.
+### Compatibility
 
-Legacy channels do not wait for a status frame and keep the older best-effort behavior. After any negotiated OK status, client-to-server datagrams are sent as chunks:
+- The protocol is v2-only at channel authentication. Old clients and servers
+  fail closed instead of silently downgrading.
+- The TCP/UDP/Ping data open header remains compact for performance, but it is
+  reachable only after v2 `ChannelAccept`.
+- Future incompatible control-plane changes must use new v2 frame/TLV records
+  and must reject unknown critical records.
 
-```text
-0                   1
-+-------------------+
-| chunk_len (BE16)  |
-+-------------------+
-| payload bytes ... |
-+-------------------+
-```
+### Reliability
 
-Limits:
+- TCP/UDP open failures have structured status codes. Mid-stream TCP failures
+  are still byte-stream closures rather than structured protocol errors.
+- Reconnect timing and major network timeouts are configurable through
+  `GlobalConfig`.
 
-- `chunk_len <= 65535`.
-- Zero-length chunks are ignored.
+### Security
 
-Server-to-client UDP replies include the source address string and payload:
+- Tokens are pre-shared secrets used only to derive HMAC proofs.
+- `ws://` is allowed for local tests and trusted private networks; exposed
+  deployments should use `wss://`, source CIDR filtering, and optionally mTLS.
+- Server-side egress policy is pre-dial: CIDR rules apply to literal IP targets,
+  and host rules apply to literal domain targets before DNS resolution.
 
-```text
-0                   1                   2                   3
-+-------------------+-------------------+-------------------+
-| addr_len (BE16)   | payload_len (BE16)|
-+-------------------+-------------------+-------------------+
-| addr bytes ...                                        |
-+-------------------------------------------------------+
-| payload bytes ...                                     |
-+-------------------------------------------------------+
-```
+## 11. Evolution Rules
 
-Limits:
-
-- `addr_len <= 65535`.
-- `payload_len <= 65535`.
-- `addr bytes` must be a valid non-empty `host:port` source address. DNS names and IP literals are accepted, and the port must be in `1..65535`.
-
-## 9. SOCKS5 UDP Packet Format
-
-The local SOCKS5 command and UDP packet parsing follows RFC 1928 for supported commands and address encodings, with additional x-tunnel target-policy checks before remote streams are opened.
-
-The local SOCKS5 UDP association accepts standard SOCKS5 UDP request packets:
-
-```text
-RSV(2) | FRAG(1) | ATYP(1) | DST.ADDR | DST.PORT(2) | DATA
-```
-
-Current behavior:
-
-- `RSV` must be `0x0000`.
-- `FRAG` must be `0`.
-- `ATYP` supports IPv4, domain, and IPv6.
-- Domain targets must be valid DNS hostnames before a smux stream is opened.
-- IPv6 targets are formatted as `[host]:port` after parsing.
-- UDP destination ports listed in `-block` are silently dropped.
-
-## 10. Local HTTP Proxy Behavior
-
-The local HTTP proxy follows RFC 9110 semantics where applicable, then applies x-tunnel target validation and target-policy checks before opening a smux stream.
-
-The local HTTP listener accepts three proxy forms:
-
-- `CONNECT host:port HTTP/1.1` for HTTPS or other TCP tunnels. A missing port defaults to `443`.
-- Absolute-form HTTP requests such as `GET http://host[:port]/path HTTP/1.1`. A missing port defaults to `80`.
-- Origin-form requests such as `GET /path HTTP/1.1` with a valid `Host` header. A missing port defaults to `80`.
-
-Non-CONNECT absolute-form requests are accepted only with the `http` scheme. Absolute-form `https://`, `ftp://`, URL userinfo, malformed authorities, invalid DNS hostnames, and mismatched `Host` versus URL authorities are rejected with `400 Bad Request` before any smux stream opens. `Proxy-Authorization` is consumed locally before forwarding ordinary HTTP requests, with the Basic auth scheme matched case-insensitively. Hop-by-hop request headers are stripped before forwarding, including fields named by `Connection` plus common proxy/connection-only fields such as `Proxy-Connection`, `Keep-Alive`, `TE`, `Trailer`, `Transfer-Encoding`, and `Upgrade`; close state from `Connection: close` is also cleared. Forwarded non-CONNECT requests append `Via: 1.1 x-tunnel`, preserving any existing `Via` values. CONNECT tunnel payload bytes remain opaque and do not receive proxy-added request headers.
-
-Successful CONNECT requests return `HTTP/1.1 200 Connection Established` and then switch the connection to opaque tunnel bytes. Following RFC 9110 CONNECT guidance, this 2xx response does not include `Content-Length` or `Transfer-Encoding`.
-
-## 11. Current Risk Map
-
-### Compatibility Risks
-
-- Protocol version/capability negotiation now exists on a hello control stream, but TCP/UDP/Ping stream headers are still unversioned for compatibility.
-- Optional future features such as compression, stronger auth, or additional status fields must be gated behind capability flags.
-- Unknown stream kinds are explicitly rejected and counted. Structured open error codes are negotiated with OpenStatusCode and must not be sent to peers that did not negotiate it.
-
-### Reliability Risks
-
-- TCP/UDP open failures have negotiated status frames and optional structured open error codes. Mid-stream TCP failures are still byte-stream closures rather than structured protocol errors.
-- Reconnect timing and major network timeouts are configurable, but future paths should keep using `GlobalConfig` rather than reintroducing literals.
-- Graceful shutdown and listener lifecycle are not centralized.
-
-### Security Risks
-
-- WebSocket token auth is a bearer-token subprotocol check only.
-- `-insecure` and ECH fallback behavior must stay explicit in logs because misuse weakens TLS validation.
-- Server-side egress policy is pre-dial only: CIDR rules apply to literal IP targets, and host rules apply to literal domain targets before DNS resolution. `allow-host` does not allow literal IP targets, `deny-host` alone does not block literal IP targets, and host matches do not prove the final resolved IP for a domain.
-
-### Testability Risks
-
-- The project has unit coverage for protocol helpers and automated local integration coverage, but broader load, failure-injection, and cross-platform tests are still future work.
-- Protocol encoders/decoders live in `internal/wire`; SOCKS5 parsing remains in the app layer.
-
-## 12. Evolution Rules
-
-- Do not change existing wire bytes until unit tests cover current encoders/decoders.
-- Add negotiation before introducing incompatible stream framing.
-- Keep current WS/WSS + smux behavior working while adding tests and docs.
-- Prefer explicit errors over silent fallthrough for future protocol versions.
+- Keep authentication and capability negotiation on v2 control frames.
+- Keep the hot TCP/UDP payload path raw unless a measured requirement justifies
+  additional framing.
+- Add tests for exact wire bytes before changing encoders/decoders.
+- Prefer explicit rejection over fallback when peers do not support required v2
+  behavior.

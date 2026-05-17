@@ -7,23 +7,18 @@ import (
 )
 
 const (
-	streamKindTCP   = wire.StreamKindTCP
-	streamKindUDP   = wire.StreamKindUDP
-	streamKindPing  = wire.StreamKindPing
-	streamKindHello = wire.StreamKindHello
+	streamKindTCP  = wire.StreamKindTCP
+	streamKindUDP  = wire.StreamKindUDP
+	streamKindPing = wire.StreamKindPing
 
-	protocolVersion                    = wire.ProtocolVersion
-	protocolStatusOK                   = wire.ProtocolStatusOK
-	protocolStatusUnsupportedVersion   = wire.ProtocolStatusUnsupportedVersion
-	protocolStatusNoCommonCapabilities = wire.ProtocolStatusNoCommonCapabilities
-
-	protocolCapabilityTCP            = wire.ProtocolCapabilityTCP
-	protocolCapabilityUDP            = wire.ProtocolCapabilityUDP
-	protocolCapabilityPing           = wire.ProtocolCapabilityPing
-	protocolCapabilityIPStrategy     = wire.ProtocolCapabilityIPStrategy
-	protocolCapabilityTCPStatus      = wire.ProtocolCapabilityTCPStatus
-	protocolCapabilityUDPStatus      = wire.ProtocolCapabilityUDPStatus
-	protocolCapabilityOpenStatusCode = wire.ProtocolCapabilityOpenStatusCode
+	protocolCapabilityTCP            = 1 << 0
+	protocolCapabilityUDP            = 1 << 1
+	protocolCapabilityPing           = 1 << 2
+	protocolCapabilityIPStrategy     = 1 << 3
+	protocolCapabilityTCPStatus      = 1 << 4
+	protocolCapabilityUDPStatus      = 1 << 5
+	protocolCapabilityOpenStatusCode = 1 << 6
+	protocolCapabilityChannelStats   = 1 << 9
 
 	tcpOpenStatusOK    = wire.TCPOpenStatusOK
 	tcpOpenStatusError = wire.TCPOpenStatusError
@@ -36,11 +31,19 @@ const (
 	openStatusCodeDialFailed    = wire.OpenStatusCodeDialFailed
 	openStatusCodeResourceLimit = wire.OpenStatusCodeResourceLimit
 
-	protocolHelloMagic  = wire.ProtocolHelloMagic
 	maxProtocolFieldLen = wire.MaxProtocolFieldLen
+	maxV2FrameSize      = wire.MaxV2FrameSize
+
+	v2RejectAuthenticationFailed = wire.V2RejectAuthenticationFailed
+	v2RejectTimestampSkew        = wire.V2RejectTimestampSkew
+	v2RejectReplayDetected       = wire.V2RejectReplayDetected
+	v2RejectResourceLimit        = wire.V2RejectResourceLimit
+	v2RejectMalformedFrame       = wire.V2RejectMalformedFrame
 )
 
-type ProtocolHello = wire.ProtocolHello
+type ChannelInit = wire.ChannelInit
+type ChannelAccept = wire.ChannelAccept
+type ChannelReject = wire.ChannelReject
 
 func isSupportedStreamKind(kind byte) bool { return wire.IsSupportedStreamKind(kind) }
 
@@ -48,16 +51,38 @@ func currentProtocolCapabilities() uint32 { return wire.CurrentProtocolCapabilit
 
 func requiredProtocolCapabilities() uint32 { return wire.RequiredProtocolCapabilities() }
 
-func currentProtocolHello() ProtocolHello { return wire.CurrentProtocolHello() }
+func currentProtocolCapabilitiesV2() uint64 { return wire.CurrentProtocolCapabilitiesV2() }
 
-func writeProtocolHello(w io.Writer, hello ProtocolHello) error {
-	return wire.WriteProtocolHello(w, hello)
+func requiredProtocolCapabilitiesV2() uint64 { return wire.RequiredProtocolCapabilitiesV2() }
+
+func writeChannelInit(w io.Writer, init ChannelInit) error { return wire.WriteChannelInit(w, init) }
+
+func readChannelInit(r io.Reader, maxSize int) (ChannelInit, error) {
+	return wire.ReadChannelInit(r, maxSize)
 }
 
-func readProtocolHello(r io.Reader) (ProtocolHello, error) { return wire.ReadProtocolHello(r) }
+func writeChannelAccept(w io.Writer, accept ChannelAccept) error {
+	return wire.WriteChannelAccept(w, accept)
+}
 
-func negotiateProtocolHello(clientHello ProtocolHello) ProtocolHello {
-	return wire.NegotiateProtocolHello(clientHello)
+func readChannelAcceptOrReject(r io.Reader, maxSize int) (ChannelAccept, ChannelReject, error) {
+	return wire.ReadChannelAcceptOrReject(r, maxSize)
+}
+
+func writeChannelReject(w io.Writer, reject ChannelReject) error {
+	return wire.WriteChannelReject(w, reject)
+}
+
+func computeV2AuthProof(token, serverName, path string, init ChannelInit) ([]byte, error) {
+	return wire.ComputeV2AuthProof(token, serverName, path, init)
+}
+
+func verifyV2AuthProof(token, serverName, path string, init ChannelInit) bool {
+	return wire.VerifyV2AuthProof(token, serverName, path, init)
+}
+
+func negotiateProtocolCapabilitiesV2(clientCaps uint64) (uint64, byte, string) {
+	return wire.NegotiateProtocolCapabilitiesV2(clientCaps)
 }
 
 func writeTCPOpenStatus(w io.Writer, status byte, message string) error {
