@@ -274,7 +274,7 @@ write_client_config() {
       printf '    "server": "cloudnproxy.baidu.com:443",\n'
       printf '    "connect_host": "sptest.baidu.com",\n'
       printf '    "headers": {\n'
-      printf '      "X-T5-Auth": "replace-with-auth-token",\n'
+      printf '      "X-T5-Auth": "482857715",\n'
       printf '      "User-Agent": "okhttp/3.11.0 Dalvik/2.1.0 (Linux; Build/RKQ1.200826.002) baiduboxapp/11.0.5.12 (Baidu; P1 11)",\n'
       printf '      "Proxy-Connection": "keep-alive",\n'
       printf '      "Connection": "keep-alive"\n'

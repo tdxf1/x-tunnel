@@ -283,7 +283,7 @@ Client configs can optionally wrap only the client-to-server WebSocket TCP conne
     "server": "cloudnproxy.baidu.com:443",
     "connect_host": "sptest.baidu.com",
     "headers": {
-      "X-T5-Auth": "replace-with-auth-token",
+      "X-T5-Auth": "482857715",
       "User-Agent": "okhttp/3.11.0 Dalvik/2.1.0 (Linux; Build/RKQ1.200826.002)"
     }
   }

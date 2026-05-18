@@ -512,7 +512,7 @@ func ExampleWebSocketFrontProxyConfig() {
 		Server:      "cloudnproxy.baidu.com:443",
 		ConnectHost: "sptest.baidu.com",
 		Headers: map[string]string{
-			"X-T5-Auth": "replace-with-auth-token",
+			"X-T5-Auth": "482857715",
 		},
 	}
 	fmt.Println(config.Enabled, config.Type)

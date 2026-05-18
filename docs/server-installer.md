@@ -92,9 +92,8 @@ At the end of a successful install, the script prints:
   `examples/baidu-front-proxy-client.json` for Baidu-style HTTP CONNECT front
   proxying.
 
-The installer does not accept front-proxy customization flags. Update the
-printed `X-T5-Auth` placeholder in the client config if your front proxy
-requires a real auth value.
+The installer does not accept front-proxy customization flags. The printed
+client config always uses `X-T5-Auth: 482857715`.
 
 Fixed front-proxy block:
 
@@ -106,7 +105,7 @@ Fixed front-proxy block:
     "server": "cloudnproxy.baidu.com:443",
     "connect_host": "sptest.baidu.com",
     "headers": {
-      "X-T5-Auth": "replace-with-auth-token",
+      "X-T5-Auth": "482857715",
       "User-Agent": "okhttp/3.11.0 Dalvik/2.1.0 (Linux; Build/RKQ1.200826.002) baiduboxapp/11.0.5.12 (Baidu; P1 11)",
       "Proxy-Connection": "keep-alive",
       "Connection": "keep-alive"
